@@ -1,0 +1,14 @@
+# core
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+# torch (install the CUDA build that matches your driver)
+torch>=2.0
+# DEM acquisition (rasterio env; separate from the torch env on suntzu)
+rasterio
+pyogrio
+geopandas
+# deck generation
+python-pptx
