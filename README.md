@@ -21,7 +21,7 @@ are on the page next to the passes.
 |---|---|
 | **B · terrain (DEM)** | built — conditional diffusion sampler, beats interpolation on every metric |
 | **D · measurement** | built — in-context model, cross-variable gate replicates 9/9 |
-| **A · site (static + series, MERGED)** | trains end-to-end on synthetic rainfall-runoff; CAMELS validation pending |
+| **A · site (static + series, MERGED)** | trained on real CAMELS, leave-region-out — ablations pass, **U3 gate (beat a regional LSTM) not yet run** |
 | connector / decoders | working single-modality version exists; general version templated |
 
 ---
@@ -134,6 +134,54 @@ Neighbouring sites give a **step**, not a curve (−0.145 → 0.582 on the first
 neighbour, then flat to 16) — the model calibrates from one neighbour but does
 **not** aggregate across many. Fixed context size during training is the likely
 cause; randomising it is the untested fix.
+
+---
+
+## Result 3 — the merged site encoder, on real CAMELS
+
+CAMELS_Frederik.nc: **671 basins x 12,784 days (1980-2014)**, 26 static
+attributes, daymet forcings, no missing values. Leave-region-out by USGS
+drainage-basin code — regions 01, 11, 17 held out, **124 basins the model never
+saw**. Streamflow is log1p'd and reconstructed in 16-day patches.
+
+| mask (= inference mode) | model | no attrs | attr gain | climate gain | **physical gain** | climatology | persistence |
+|---|---|---|---|---|---|---|---|
+| random span (gap filling) | 0.606 | 0.565 | +0.042 | +0.002 | −0.041 | −0.000 | −0.008 |
+| causal tail (forecasting) | 0.802 | 0.642 | +0.160 | +0.017 | **+0.089** | −0.053 | −0.635 |
+| whole variable (cross-var) | 0.822 | 0.627 | +0.195 | +0.072 | **+0.094** | −0.006 | −0.380 |
+| **whole site (PUB)** | **0.769** | 0.561 | +0.208 | +0.042 | **+0.116** | −0.043 | −0.977 |
+
+**Whole-site is the mode this design exists for** — every observation hidden,
+in a region never seen — and it reaches R² 0.769 from forcings and attributes
+alone.
+
+**The split ablation is what makes the attribute result meaningful.** CAMELS
+ships `p_mean`, `pet_mean`, `aridity`, `frac_snow` and the precipitation
+frequency/duration terms — all aggregates of the forcing series the model
+already reads. Handing those over is not new information. Splitting the
+ablation shows the gain comes from the **physical** half (soils, geology,
+slope, area: +0.089 to +0.116), which *exceeds* the climate half (+0.017 to
++0.072). Without that split, `attr_gain` of +0.21 would have read as proof of
+catchment learning when it might have been the model reading a summary of its
+own input — the same trap as the `W·d·v = Q` identity, caught before it was
+claimed.
+
+Two things stated plainly:
+
+- **This has NOT passed its U3 gate.** The build plan requires beating a
+  **regional LSTM**; that has not been run. Climatology (≈0) and persistence
+  (negative) are weak baselines and the bar here was low.
+- On `random span`, `physical gain` is **negative** (−0.041): when surrounding
+  streamflow is visible, physical attributes slightly hurt. That row's n is
+  also only 1,712, because the random-span mask picks a channel at random and
+  lands on `QObs` about one time in six.
+
+A synthetic rainfall-runoff generator (`data/forcing.py:synthetic`) reaches R²
+0.97–0.99 with attribute gains of 0.40–0.71. That is a **machinery test only** —
+the generator was written here, so the model recovering it is close to
+circular. It is retained because it makes the ablation demonstrably sensitive,
+and because it exposed one way synthetic data misleads: persistence dominated
+there and is strongly negative on real CAMELS.
 
 ---
 

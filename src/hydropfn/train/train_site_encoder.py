@@ -36,8 +36,9 @@ import numpy as np
 import pandas as pd
 import torch
 
-from hydropfn.data.forcing import (MASK_KINDS, load_camels,  # noqa: E402
-                                   patchify, sample_mask, synthetic)
+from hydropfn.data.forcing import (CLIMATE_STATICS, MASK_KINDS,  # noqa: E402
+                                   load_camels, patchify, sample_mask,
+                                   synthetic)
 from hydropfn.models.site_encoder import SiteEncoder, masked_mse
 from hydropfn.paths import LOGS
 
@@ -69,13 +70,22 @@ def make_batch(Xp, A, valid_p, doy, idx, rng, win, kind=None, n_obs=1):
             "vis": t(b_v), "valid": t(b_val), "doy": t(b_doy)}
 
 
-def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch):
+def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch,
+             clim_cols=None, phys_cols=None):
     """Per-mask-type reconstruction R2 on the observation channel, plus the
-    attribute-ablation check."""
+    attribute ablations.
+
+    The ablation is SPLIT because "attributes help" is only interesting if the
+    PHYSICAL half does the work. CAMELS statics include p_mean, aridity,
+    frac_snow and the precipitation-frequency terms, all of which are
+    aggregates of the forcing series the model already reads -- handing those
+    over is not new information, it is a summary of its own input.
+    """
     rows = []
     net.eval()
     for kind in MASK_KINDS:
-        got = {"model": [], "no_attrs": [], "clim": [], "persist": []}
+        got = {"model": [], "no_attrs": [], "no_climate": [], "no_physical": [],
+               "clim": [], "persist": []}
         truth = []
         erng = np.random.default_rng(0)
         for i in range(0, len(idx), batch):
@@ -85,6 +95,15 @@ def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch):
                 r = net(b)["recon"]
                 b0 = dict(b); b0["attrs"] = torch.zeros_like(b["attrs"])
                 r0 = net(b0)["recon"]
+                if clim_cols is not None and len(clim_cols):
+                    bc = dict(b); ac = b["attrs"].clone()
+                    ac[:, clim_cols] = 0.0; bc["attrs"] = ac
+                    rc = net(bc)["recon"]
+                    bp = dict(b); ap_ = b["attrs"].clone()
+                    ap_[:, phys_cols] = 0.0; bp["attrs"] = ap_
+                    rp = net(bp)["recon"]
+                else:
+                    rc = rp = r
             w = ((1 - b["vis"]) * b["valid"])[..., obs_col].bool()
             if w.sum() == 0:
                 continue
@@ -92,6 +111,8 @@ def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch):
             truth.append(y)
             got["model"].append(r[..., obs_col, :][w].cpu().numpy().ravel())
             got["no_attrs"].append(r0[..., obs_col, :][w].cpu().numpy().ravel())
+            got["no_climate"].append(rc[..., obs_col, :][w].cpu().numpy().ravel())
+            got["no_physical"].append(rp[..., obs_col, :][w].cpu().numpy().ravel())
             got["clim"].append(np.zeros_like(y))       # standardised => mean 0
             # persistence: last visible patch of that channel, per sample
             vis = b["vis"][..., obs_col].cpu().numpy()
@@ -113,6 +134,8 @@ def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch):
             p = np.concatenate(v)
             rec[k] = float(1 - ((y - p) ** 2).sum() / den)
         rec["attr_gain"] = rec["model"] - rec["no_attrs"]
+        rec["climate_gain"] = rec["model"] - rec["no_climate"]
+        rec["physical_gain"] = rec["model"] - rec["no_physical"]
         rows.append(rec)
     return pd.DataFrame(rows)
 
@@ -122,7 +145,7 @@ def main(a):
     rng = np.random.default_rng(a.seed)
 
     if a.source == "camels":
-        d = load_camels(a.nc, start=a.start, end=a.end)
+        d = load_camels(a.nc)
     else:
         d = synthetic(a.n_sites, a.n_days, a.seed)
     X, A_, valid = d["x"], d["attrs"], d["valid"]
@@ -132,9 +155,22 @@ def main(a):
           f"{A_.shape[1]} attributes | {DEVICE}", flush=True)
 
     S = X.shape[0]
-    perm = rng.permutation(S)
-    n_te = max(20, S // 5)
-    te, tr = perm[:n_te], perm[n_te:]
+    region = d["region"]
+    if a.source == "camels":
+        # LEAVE-REGION-OUT: hold out whole USGS drainage-basin groups. A random
+        # basin split would leave neighbours of every test basin in training,
+        # which is the easy question, not the one this model exists to answer.
+        regs = sorted(set(region.tolist()))
+        hold = a.holdout.split(",") if a.holdout else regs[:3]
+        te = np.flatnonzero(np.isin(region, hold))
+        tr = np.flatnonzero(~np.isin(region, hold))
+        print(f"  holdout regions {hold}: {len(te)} basins held out, "
+              f"{len(tr)} train", flush=True)
+    else:
+        perm = rng.permutation(S)
+        n_te = max(20, S // 5)
+        te, tr = perm[:n_te], perm[n_te:]
+        print(f"  synthetic: random split, {len(te)} held out", flush=True)
 
     mu, sd = standardise(X[tr], valid[tr])
     Xs = (X - mu) / sd
@@ -176,19 +212,33 @@ def main(a):
                 "n_vars": Xp.shape[2], "patch": a.patch},
                LOGS / f"site_encoder_{a.tag}.pt")
 
+    names = d["static_vars"]
+    clim_cols = [i for i, n in enumerate(names) if n in CLIMATE_STATICS]
+    phys_cols = [i for i, n in enumerate(names) if n not in CLIMATE_STATICS]
     df = evaluate(net, Xp, A_s, valid_p, doy, te, rng, a.win, n_obs, obs_col,
-                  a.batch)
+                  a.batch, clim_cols, phys_cols)
     df.to_csv(LOGS / f"site_encoder_{a.tag}.csv", index=False)
     pd.set_option("display.width", 200)
     print("\n=== streamflow reconstruction R2 on held-out sites, by mask ===")
-    print(df[["mask", "n", "model", "no_attrs", "attr_gain", "clim",
-              "persist"]].to_string(index=False,
-                                    float_format=lambda v: f"{v:+.4f}"))
-    print("\n  model     : full input")
-    print("  no_attrs  : attributes zeroed at inference (ABLATION)")
-    print("  attr_gain : model - no_attrs. If ~0, merging bought nothing.")
-    print("  clim      : per-variable training mean (standardised => 0)")
-    print("  persist   : last visible value of that channel")
+    cols = ["mask", "n", "model", "no_attrs", "attr_gain"]
+    if "climate_gain" in df.columns:
+        cols += ["climate_gain", "physical_gain"]
+    cols += ["clim", "persist"]
+    print(df[cols].to_string(index=False,
+                             float_format=lambda v: f"{v:+.4f}"))
+    print("\n  model         : full input")
+    print("  no_attrs      : ALL attributes zeroed at inference")
+    print("  attr_gain     : model - no_attrs. If ~0, merging bought nothing.")
+    print("  climate_gain  : cost of zeroing only the CLIMATE statics")
+    print("                  (p_mean, aridity, frac_snow, prec freq/dur).")
+    print("                  These duplicate the forcing series the model")
+    print("                  already reads, so a large value here is NOT")
+    print("                  evidence of catchment learning.")
+    print("  physical_gain : cost of zeroing only the PHYSICAL statics")
+    print("                  (soils, geology, slope, area). THIS is the")
+    print("                  number that justifies the merged design.")
+    print("  clim          : per-variable training mean (standardised => 0)")
+    print("  persist       : last visible value of that channel")
     print(f"\nwrote {LOGS / f'site_encoder_{a.tag}.csv'}")
 
 
@@ -210,4 +260,7 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="synth")
+    ap.add_argument("--holdout", default=None,
+                    help="comma-separated USGS region prefixes to hold out, "
+                         "e.g. 01,11,17 (default: the first three)")
     main(ap.parse_args())
