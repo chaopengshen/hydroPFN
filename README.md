@@ -21,8 +21,7 @@ are on the page next to the passes.
 |---|---|
 | **B · terrain (DEM)** | built — conditional diffusion sampler, beats interpolation on every metric |
 | **D · measurement** | built — in-context model, cross-variable gate replicates 9/9 |
-| A · static | free: load the StefaLand checkpoint (ICDS path in `docs/architecture.md`) |
-| C · forcing-response | **template only** — the one unbuilt data path, and what makes this hydrology |
+| **A · site (static + series, MERGED)** | trains end-to-end on synthetic rainfall-runoff; CAMELS validation pending |
 | connector / decoders | working single-modality version exists; general version templated |
 
 ---
@@ -86,7 +85,32 @@ elevation accuracy (1.058 → 1.192); with the residual it **improves both**
 
 ---
 
-## Result 2 — in-context conditioning works, and beats hand-engineering
+## Result 2 — the model learns from a site's own measurements, better than a hand-built feature can
+
+Concretely. Take a river site where somebody measured **width** on several
+visits, and you want to know the **velocity**. Two ways to use those width
+measurements:
+
+**Hand-engineering.** Invent a feature: *"the median amount this site's width
+deviates from what its attributes predict, across its other visits."* Feed that
+one number to a random forest. Gain: **+0.041 R²** on velocity.
+
+**In-context.** Hand the model the raw measurements as tokens —
+`(width, 47 m, at discharge 3.2)`, `(width, 61 m, at discharge 8.1)` — and let
+it work out what they imply. Gain: **+0.127 R²**.
+
+Same raw data, **2.3× more extracted**. That is the argument for the
+architecture: you do not have to invent a clever feature for each variable
+pair and each measurement pattern — the model learns them. And those
+measurements are supplied **at prediction time, with no retraining**, which is
+what "in-context" means here.
+
+Why does knowing width tell you about velocity at all? Because `W·d·v = Q`:
+at a given discharge, a site that runs anomalously wide must be anomalously
+shallow or slow. The data supply *how that trade-off splits* at this particular
+site — and that split is real channel-shape information no attribute table
+contains. (Same-visit measurements are excluded from context throughout, so
+this is cross-visit inference, not arithmetic on one row.)
 
 The measurement unit (D) trained on 64,797 HYDRoSWOT visits at 5,057 sites.
 Acceptance gates were fixed before any run, then **replicated over 3 holdout
@@ -119,22 +143,25 @@ cause; randomising it is the untested fix.
 src/hydropfn/
   data/     dem.py          3DEP patch acquisition (gage-centred or uniform CONUS)
             folds.py        leave-region-out and grouped splits
-            forcing.py      TEMPLATE — weather + observation series
+            forcing.py      CAMELS loader + synthetic generator + mask sampler
   models/   diffusion.py    DEM sampler: U-Net, cosine DDPM, conditional DDIM
             inpaint.py      masks, harmonic / IDW baselines, PConv U-Net
             measurement_pfn.py   the built in-context model (unit D + connector)
-            encoders.py     TEMPLATE — units A and C, shared trunk
+            site_encoder.py the merged unit A: static + series, one trunk
+            encoders.py     superseded notes on the A/C merge decision
             connector.py    TEMPLATE — general cross-site transformer
             decoders.py     TEMPLATE — per-modality decoders
             stefanp.py      TEMPLATE — the assembled model
   metrics/  terrain.py      slope, hillshade, PSD, semivariogram, slope-W1
   train/    train_dem_sampler.py       built
             train_measurement_pfn.py   built
+            train_site_encoder.py      built (unit A, masked reconstruction)
             train_stefanp.py           TEMPLATE — the four-stage plan
 scripts/    figure and deck generation
 experiments/  the evidence base (see below)
 tests/      test_smoke.py   invariant checks; run after any lib edit
-docs/       architecture.md, proposal_seed.md, dev_log.md, code review
+docs/       architecture.md, stefaland_reuse.md, proposal_seed.md,
+            dev_log.md, code review
 ```
 
 The templates are not placeholders — each carries the design decision, the

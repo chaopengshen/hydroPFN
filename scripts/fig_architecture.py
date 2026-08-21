@@ -60,25 +60,30 @@ def main(out: str) -> None:
             "no cross-site interaction here)", fontsize=11.5, color=ACC,
             weight="bold", va="top")
     units = [
-        ("A · static", GOOD,
-         "IN   (B,S,49)\nMLP  49→256→256\nOUT  (B,S,1,256)\n\n"
-         "mask 15% of attrs,\nregress them back\n\n→ StefaLand weights"),
+        ("A · site — static + series, MERGED", WARN,
+         "IN   attrs   (B,S,49)\n     series  (B,S,N,V,16)\n"
+         "     V = forcings + OBSERVATIONS\n\n"
+         "token = value + var-ID + pos + doy\n"
+         "  1 static token  +  N·V series\nshared trunk, 4 layers\n"
+         "OUT  (B,S,1+K,256)\n\n"
+         "masked reconstruction, 4 mask types\n"
+         "→ StefaLand initialises the static\n   and forcing paths"),
         ("B · terrain (DEM)", GOOD,
-         "IN   (B,S,1,128,128)\n     10 m patches\nconv 128→16, pool\n"
-         "OUT  (B,S,1..4,256)\n\nmasked recon\n(diffusion decoder)"),
-        ("C · forcing-response", BAD,
-         "IN   (B,S,T,V)\n     T≈3650 d, V≈10\n  + the A and B tokens\n"
-         "     in the SAME seq\n16-d patches → N≈228\n     → pool 2..4\n"
-         "OUT  (B,S,2..4,256)"),
+         "IN   (B,S,1,128,128)\n     10 m patches\n"
+         "conv 128→16, pool\nOUT  (B,S,1..4,256)\n\n"
+         "masked reconstruction\n(diffusion decoder)\n\n"
+         "BUILT — beats harmonic on\nevery metric"),
         ("D · measurement", GOOD,
-         "IN   (B,S,M,3)\n     var / value / cov\nsum of 3 embeddings\n"
-         "OUT  (B,S,M,256)\n     M≈12\n\nmasked value"),
+         "IN   (B,S,M,3)\n     var / value / covariate\n"
+         "sum of 3 embeddings\nOUT  (B,S,M,256)\n     M≈12\n\n"
+         "masked value\n\n"
+         "BUILT — cross-variable gate\n9/9 across regions and seeds"),
     ]
-    x0, w, gap, y1, h1 = 0.012, 0.234, 0.016, 0.575, 0.292
+    x0, w, gap, y1, h1 = 0.012, 0.318, 0.017, 0.550, 0.332
     for i, (t, c, b) in enumerate(units):
         x = x0 + i * (w + gap)
         box(ax, x, y1, w, h1, t, b, edge=c)
-        arrow(ax, x + w / 2, y1, x + w / 2, y1 - 0.032, c)
+        arrow(ax, x + w / 2, y1, x + w / 2, y1 - 0.007, c)
 
     ax.add_patch(FancyBboxPatch((0.012, 0.497), 0.976, 0.048,
                                 boxstyle="round,pad=0.008", linewidth=1.3,
@@ -125,9 +130,9 @@ def main(out: str) -> None:
     wd = 0.316
     for i, (t, b) in enumerate(dec):
         x = 0.012 + i * (wd + 0.014)
-        box(ax, x, 0.095, wd, 0.126, t, b, edge=GOOD, ts=10, bs=8.2)
+        box(ax, x, 0.090, wd, 0.142, t, b, edge=GOOD, ts=10, bs=8.2)
 
-    ax.text(0.5, 0.062,
+    ax.text(0.5, 0.050,
             "Why three levels: a 40-year daily record is ~900 patch tokens — "
             "far too many for the connector, which must stay at 4–10 summary "
             "tokens per site.\nThe summary is the CONDITIONING VECTOR that "
@@ -136,7 +141,7 @@ def main(out: str) -> None:
             ha="center", va="center", fontsize=9.5, color=MUTE,
             linespacing=1.6)
 
-    ax.text(0.5, 0.036, "green = built and gated      red = not built",
+    ax.text(0.5, 0.018, "green = built and gated      amber = trains end-to-end; CAMELS validation pending",
             ha="center", va="center", fontsize=9, color=MUTE, style="italic")
 
     (ROOT / "figs").mkdir(exist_ok=True)
