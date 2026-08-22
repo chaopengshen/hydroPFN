@@ -22,7 +22,7 @@ are on the page next to the passes.
 | **B · terrain (DEM)** | built — conditional diffusion sampler, beats interpolation on every metric |
 | **D · measurement** | built — in-context model, cross-variable gate replicates 9/9 |
 | **A · site (static + series, MERGED)** | trained on real CAMELS, leave-region-out — ablations pass, **U3 gate (beat a regional LSTM) not yet run** |
-| connector (cross-site) | built; first test was mis-specified (context forced ~190 km away). Corrected geographic-neighbour test running — see `docs/pub_test_plan.md` |
+| **connector (cross-site)** | **built and TESTED — ungauged basins predicted at R² 0.853 by conditioning on nearby gauges (+0.38 over no context), beating donor-averaging at every K** |
 
 ---
 
@@ -184,6 +184,37 @@ and because it exposed one way synthetic data misleads: persistence dominated
 there and is strongly negative on real CAMELS.
 
 ---
+
+## Result 4 — prediction in ungauged basins, from context alone
+
+The load-bearing claim. A query basin in a **region the model never trained
+on**, with **every streamflow observation hidden**, predicted by conditioning
+on K nearby gauged basins at inference — no retraining.
+
+| K nearby gauges | **model** | nn_donor | ctx_mean |
+|---|---|---|---|
+| 0 | 0.4714 | — | — |
+| 1 | 0.8293 | 0.785 | 0.785 |
+| **4** | **0.8528** | 0.785 | 0.829 |
+| 16 | 0.8294 | 0.785 | 0.766 |
+| 32 | 0.8053 | 0.785 | 0.698 |
+
+**+0.38 R² from context**, beating both a nearest-neighbour donor and
+donor-averaging at every K. Donor-averaging is the method operational PUB
+actually uses, so that is the bar that matters.
+
+Two findings behind it, both the product of being wrong first:
+
+- **Neighbours, not lookalikes.** Attribute-similar basins on the far side of
+  the continent see different weather on the same day and are worth nothing
+  (+0.0000). Basins ~32 km away share storms and are worth +0.38.
+- **Pooled summaries destroy the signal.** Letting each query patch attend to
+  context patches at the SAME time position took the model from 0.556 to 0.853
+  with nothing else changed. The connector's time-pooled tokens are right for
+  transferring basin character and wrong for transferring today's weather.
+
+See `docs/pub_test_plan.md`, including the two mis-specified tests that came
+first.
 
 ## Layout
 

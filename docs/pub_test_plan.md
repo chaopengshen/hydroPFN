@@ -1,19 +1,10 @@
 # Does context actually let us predict an ungauged site?
 
-> **RESULT 2026-08-21, then CORRECTED the same day.** The first run found
-> context worth exactly +0.0000 — but that test was MIS-SPECIFIED. It drew
-> context from training regions only, which under leave-region-out forces
-> context basins to be geographically distant. Measured: the nearest available
-> context basin was a median **1.73°** away, while the nearest real gauge is
-> **0.29°**. So it asked "can basins ~190 km away help?" and answered no —
-> which is neither the interesting question nor the real PUB setting.
->
-> Nearby gauged basins share STORMS with the query. With geographic retrieval
-> from the full pool, the trivial baselines jump from `ctx_mean` 0.312 to
-> **0.829** — the information was always there and the protocol excluded it.
-> The corrected test is running; the flat result below stands only for
-> *distant* context.
-
+> **RESULT: YES — context is worth +0.38 R², and the model beats every
+> baseline.** A genuinely ungauged basin, in a region never trained on, is
+> predicted at **R² 0.853** by conditioning on nearby gauges at inference with
+> no retraining. Full curve and the two wrong turns that preceded it are at the
+> bottom of this file.
 This is the load-bearing claim of the whole design. Everything else — the DEM
 sampler, the merged site encoder, the StefaLand reuse — is scaffolding around
 it. It has **not** been tested for time series.
@@ -211,3 +202,65 @@ Two secondary possibilities not yet excluded, in order of plausibility:
    among training basins for a training query is testable.
 2. Architecture: one cross-attention layer and 3 summary tokens per site may be
    too thin. Weak, given that the effect is exactly zero rather than small.
+
+
+---
+
+## FINAL RESULT — the claim holds
+
+`--retrieval geo --context-pool all --time-aligned`, 40 epochs,
+leave-region-out (`01,11,17`), 124 held-out query basins.
+
+| K | **model** | nn_donor | ctx_mean |
+|---|---|---|---|
+| 0 | 0.4714 | — | — |
+| 1 | 0.8293 | 0.785 | 0.785 |
+| 2 | 0.8491 | 0.785 | 0.814 |
+| **4** | **0.8528** | 0.785 | 0.829 |
+| 8 | 0.8462 | 0.785 | 0.806 |
+| 16 | 0.8294 | 0.785 | 0.766 |
+| 32 | 0.8053 | 0.785 | 0.698 |
+| **gain** | **+0.3814** | | |
+
+- **T-B PASS.** Context beats no-context by +0.38.
+- **T-C PASS.** Rises 0 → 4, peaks, declines gently. Not a K=1 step.
+- **T-D PASS.** Beats `ctx_mean` at every K (by 0.02–0.11) and `nn_donor` by up
+  to 0.07. Beating a donor-averaging baseline is the bar that matters, and it
+  clears it.
+
+**The gentle decline past K=4** mirrors `ctx_mean`'s own peak at K=4: the
+nearest gauges carry the storm, distant ones dilute it. "More context is
+better" is false; retrieval quality beats quantity.
+
+**K=0 got worse** (0.471 vs 0.547 for the summary-only model). Capacity spent
+on the context pathway costs the no-context pathway. A fine trade here, but the
+model is not strictly dominant — with no neighbours available, the simpler
+model wins.
+
+### The single change that did it
+
+Letting each query patch attend to context patches at the SAME time position:
+**0.556 → 0.853**, everything else identical. The connector's time-POOLED
+summaries could never carry "the neighbour's flow at patch n", which is exactly
+what `ctx_mean` exploits.
+
+**Design consequence.** The scaling guardrail — connector sees only 4–10 pooled
+tokens per site, never raw timesteps — is right for transferring BASIN
+CHARACTER and wrong for transferring TODAY'S WEATHER. The architecture needs
+both paths: pooled summaries for slow, site-identifying information, and a
+time-aligned path for fast, contemporaneous information. Anything that pools
+over time destroys the second.
+
+### Two wrong turns, recorded because they were instructive
+
+1. **Context forced ~190 km away.** Drawing context from training regions
+   under leave-region-out guarantees it sits in a different drainage region.
+   Median distance to the nearest available context basin was 1.73° against
+   0.29° to the nearest real gauge. Conclusion drawn: "context carries
+   nothing." Wrong — the protocol excluded the only informative context.
+2. **Then: "the model can't use it."** True of that architecture, but the
+   limitation was one I had built in myself via the pooling guardrail.
+
+A pre-registered plan did not protect against either. What caught the first was
+being asked whether the setup matched the real situation; the second only
+became visible once the first was fixed.
