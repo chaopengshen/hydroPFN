@@ -213,6 +213,11 @@ Two findings behind it, both the product of being wrong first:
   with nothing else changed. The connector's time-pooled tokens are right for
   transferring basin character and wrong for transferring today's weather.
 
+**Replicated** over 3 seeds (peak spread 0.008) and a second region set: gain
++0.368 to +0.401, beating donor-averaging in 4/4 runs at every K. The second
+region set is harder in absolute terms (peak 0.728) yet the gain is identical
+and the margins larger — the effect belongs to the method, not to easy basins.
+
 See `docs/pub_test_plan.md`, including the two mis-specified tests that came
 first.
 
