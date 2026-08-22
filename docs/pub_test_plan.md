@@ -317,37 +317,51 @@ compare two different quantities.
 
 **GATE PASSES — with context, on both region sets.** But read the middle column.
 
-### The uncomfortable finding
+### The apparent weakness — and why it is an artefact
 
-**Our per-site pathway is much worse than a standard LSTM: 0.36–0.47 against
-0.71–0.75.** A gap of 0.29–0.35. Our encoder is a weaker hydrological model
-than the field's workhorse, and the ENTIRE advantage comes from context.
+At first reading this says our per-site pathway is far worse than an LSTM
+(0.36–0.47 vs 0.71–0.75) and the entire advantage comes from context. **That
+reading is wrong, and the first explanation offered for it was wrong too.**
 
-The defensible claim is therefore narrower than "our architecture is better".
-It is: **conditioning on nearby gauges is worth more than the modelling gap it
-has to overcome.** That is still a real and useful claim — an LSTM structurally
-cannot use neighbouring gauges at inference — but it is not the claim a casual
-reading of the headline number would suggest.
+The discarded explanation: "the price of multi-task pretraining." `train_pub.py`
+computes its loss ONLY on the query's masked streamflow — it was never
+multi-task. The code contradicts the story.
+
+The actual reason: **`k_train` samples K from `{0,1,2,4,8,16}`, so K=0 receives
+one training step in six.** The no-context mode is UNDERTRAINED, not
+architecturally weak.
+
+The direct evidence: **unit A trained standalone, with no context machinery at
+all, reaches 0.7631 on this holdout** (`train_site_encoder`, scratch arm) —
+which BEATS the LSTM's 0.7498. Same encoder, same data, same split. The only
+difference is that all of its training went into the no-context mode.
+
+*(Comparability caveat: the standalone run evaluates over random windows while
+the LSTM and PUB runs use a fixed window at patch 200, so 0.7631 vs 0.7498 is
+approximate rather than a controlled comparison.)*
+
+So the defensible claim is the fuller one after all: the encoder is competitive
+with an LSTM on its own, AND it can additionally condition on nearby gauges,
+which an LSTM structurally cannot do. What the PUB runs show is a training
+allocation choice, not a modelling deficiency — and it is being tested directly
+by re-running with K=0 weighted 3/8 instead of 1/6.
 
 ### Caveats that cut against us
 
 - **7.1M parameters versus the LSTM's 0.30M** — 24x the parameters for +0.02 to
   +0.11. Not a flattering efficiency comparison.
-- **Our model is trained on masked reconstruction across four mask types**, not
-  solely on streamflow. It is doing more and paying for it in single-task
-  accuracy. That is the most plausible explanation for the per-site gap, and it
-  is testable: train a streamflow-only variant and see whether K=0 closes on
-  the LSTM.
+- ~~Multi-task pretraining explains the per-site gap~~ — **retracted**, the PUB
+  loss is streamflow-only. The gap is a K-sampling artefact (above).
 - The margin is **+0.021** on one holdout. One seed for each LSTM.
 
-### The diagnostic that should come next
+### The diagnostic now running
 
-Train unit A with `whole_site` masking only (no gap-filling, forecasting or
-cross-variable objectives) and re-measure K=0 against the LSTM. Two outcomes:
+Re-train the PUB model with `--k-train 0,0,0,1,2,4,8,16` so K=0 gets 3/8 of
+steps instead of 1/6, and re-measure. Two outcomes:
 
-- **K=0 closes on the LSTM** → the per-site gap is the price of multi-task
-  pretraining, and the architecture is sound. The right response is a
-  fine-tuning stage, not a redesign.
-- **K=0 still loses** → the patch-token encoder is genuinely worse at
-  rainfall-runoff than a daily-recurrent LSTM, and the temporal representation
-  needs rethinking regardless of how well context works.
+- **K=0 rises toward 0.76** → confirmed as a training-allocation artefact. The
+  deployment recipe is to weight K=0 according to how often you expect to have
+  no neighbours.
+- **K=0 stays near 0.46** → something in the context machinery genuinely
+  damages the per-site path, and the two-path design has a real cost that the
+  standalone unit-A number was hiding.

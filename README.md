@@ -214,11 +214,11 @@ Two findings behind it, both the product of being wrong first:
   transferring basin character and wrong for transferring today's weather.
 
 **Versus a regional LSTM** (the field's workhorse, same basins, same 16-day
-patch scoring): we win with context — 0.853 vs 0.750 and 0.728 vs 0.707 — but
-our K=0 pathway *loses badly* (0.36–0.47 vs 0.71–0.75). The entire advantage
-comes from context, so the honest claim is "conditioning on nearby gauges is
-worth more than the modelling gap it overcomes", not "the architecture is
-better". We also use 24× the LSTM's parameters. See `docs/pub_test_plan.md`.
+patch scoring): we win with context — 0.853 vs 0.750 and 0.728 vs 0.707. The
+PUB model's K=0 mode looks weak (0.36–0.47) but that is a training-allocation
+artefact: K=0 gets one step in six. Unit A trained standalone reaches **0.7631,
+beating the LSTM's 0.7498** on the same split. We do use 24× the LSTM's
+parameters. See `docs/pub_test_plan.md`.
 
 **Replicated** over 3 seeds (peak spread 0.008) and a second region set: gain
 +0.368 to +0.401, beating donor-averaging in 4/4 runs at every K. The second
