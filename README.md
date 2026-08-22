@@ -193,17 +193,21 @@ on K nearby gauged basins at inference — no retraining.
 
 All at the same holdout, same window, same target:
 
-| model | R² |
-|---|---|
-| **with K=4 nearby gauges** | **0.8528** |
-| unit A standalone (no context capability) | 0.7879 |
-| regional LSTM | 0.7498 |
-| donor-averaging (`ctx_mean`, K=4) | 0.8293 |
-| nearest-neighbour donor | 0.7850 |
+| model | median of 3 seeds | spread |
+|---|---|---|
+| **with K=4 nearby gauges** | **0.8528** | 0.008 |
+| unit A standalone (no context capability) | 0.7782 | 0.016 |
+| regional LSTM | 0.7625 | 0.014 |
+| donor-averaging (`ctx_mean`, K=4) | 0.8293 | — |
+| nearest-neighbour donor | 0.7850 | — |
 
-**Context is worth +0.065 over the best non-context model and +0.103 over a
-regional LSTM**, and it beats donor-averaging — the method operational PUB
-actually uses — at every K.
+**Context is worth +0.075 over a well-trained no-context model and +0.090 over
+a regional LSTM** (worst-case across seeds: +0.065 and +0.090), and it beats
+donor-averaging — the method operational PUB actually uses — at every K.
+
+Unit A standalone and the LSTM are a **tie** (+0.016, inside both spreads), so
+essentially all of the advantage over the field's workhorse comes from the one
+thing an LSTM structurally cannot do: read neighbouring gauges at inference.
 
 > An earlier version of this README claimed **+0.38** from context. That
 > compared against the PUB model's own K=0 mode (0.4714), which is *damaged*:

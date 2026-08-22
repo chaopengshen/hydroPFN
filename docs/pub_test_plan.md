@@ -417,3 +417,48 @@ Unit A scores 0.7879 at window 200 versus 0.7631 averaged over random windows,
 so patch 200 is a slightly EASIER period. All comparisons above are at window
 200, so this affects none of them — but it does mean the fixed-window numbers
 throughout this document are mildly optimistic in absolute terms.
+
+
+---
+
+## FINAL — all comparison points multi-seeded
+
+Same holdout (`01,11,17`), same 32-patch window at 200, same target.
+
+| model | seeds | median | spread |
+|---|---|---|---|
+| **PUB, K=4 with context** | 0.8528 / 0.8528 / 0.8612 | **0.8528** | 0.008 |
+| unit A standalone | 0.7879 / 0.7722 / 0.7782 | **0.7782** | 0.016 |
+| regional LSTM | 0.7498 / 0.7625 / 0.7633 | **0.7625** | 0.014 |
+| PUB, K=0 | 0.4714 (1/6 weighting) · 0.5259 (3/8) | — | — |
+
+**Margins, median-to-median, and worst-case (context's worst seed against the
+comparator's best):**
+
+| | median | worst-case |
+|---|---|---|
+| context vs no-context | **+0.075** | **+0.065** |
+| context vs regional LSTM | **+0.090** | **+0.090** |
+| unit A vs regional LSTM | +0.016 | −0.001 |
+
+Both context margins are 4–8x the seed spreads. They hold.
+
+### RETRACTED: "unit A beats the LSTM"
+
+That was asserted from seed 0 alone (0.7879 vs 0.7498, +0.038). With three
+seeds each the gap is **+0.016 against spreads of 0.016 and 0.014 — a tie.**
+Our encoder is COMPARABLE to a regional LSTM on its own, not better. Claiming
+otherwise off one seed is precisely the error this document warns about
+elsewhere.
+
+The consequence is a cleaner story, not a worse one: if unit A merely matches
+an LSTM, then essentially ALL of the advantage over the field's workhorse comes
+from the one thing an LSTM structurally cannot do — read neighbouring gauges at
+inference.
+
+### The ablation is more seed-sensitive than the headline
+
+Seed 2's `no_attrs` is 0.5953 against 0.6723 and 0.6607, so its attribute gain
+reads 0.183 versus ~0.114 for the others. The attribute ablation varies far
+more across seeds than the whole-site metric does. Do not quote an
+attribute-gain figure to one decimal from a single run.
