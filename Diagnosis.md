@@ -195,3 +195,74 @@ rather than reasoning about it. A pre-registered plan guards against moving the
 goalposts, not against aiming at the wrong one — every one of these was a setup
 error, invisible from inside the plan. **The missing temporal control at the
 top of this document is the same class of error, still open.**
+
+
+---
+
+# CONSOLIDATED — after four fairness challenges
+
+All numbers below: leave-region-out (`01,11,17`), **temporal split** (train
+ends day 9000, evaluate day 9600, 608-day gap), 16-day patches.
+
+## The comparison that matters, on IDENTICAL 62 basins
+
+| | neighbour information | R² |
+|---|---|---|
+| LSTM (b) | none | 0.7074 |
+| LSTM (c) | **trained on the neighbours** | 0.7799 |
+| nearest-neighbour donor | copy nearest neighbour's flow | 0.8010 |
+| **`ctx_mean`** | **average the neighbours' flow** | **0.8311** |
+| **ours** | **read them at inference** | **0.8546** |
+
+**Reading neighbours at inference beats training on them by +0.075.** But
+`ctx_mean` at 0.8311 is the strongest comparator, and our margin over IT is
+**+0.024** — that is the number to lead with, not the +0.147 over LSTM(b).
+
+## The mechanism — two context modes
+
+| mode | context window | K=0 | peak | gain |
+|---|---|---|---|---|
+| **A — assimilation** | the query's CURRENT window | 0.4684 | **0.8584** | **+0.390** |
+| **B — regionalisation** | an earlier TRAINING-period window | 0.5227 | 0.5265 | +0.004 |
+
+A neighbour's *current flow* is worth +0.39. A neighbour's *history* is worth
+~nothing extra. The effect is real-time state, not learned similarity — which
+is why this is data assimilation, and why the time-aligned attention (which
+matches patch n of the query to patch n of the context) is the component that
+matters.
+
+*(Mode B is being re-run with the training-context leak closed; the figure
+above still carries it. Under the leak the neighbours' histories were partly
+absorbed into the weights already, so the null was about REDUNDANCY, not about
+the value of historical data — a distinction CS identified.)*
+
+## Corrections forced by the four challenges
+
+| challenge | verdict |
+|---|---|
+| no temporal split | **real** — now controlled; costs 0.008, result survives |
+| exceeding the gauged ceiling | **not happening** — we sit 0.016 under it (0.8447 vs 0.8606) |
+| LSTM undertrained | **no** — 5x budget makes it WORSE (0.7553 → 0.7467; it overfits) |
+| held-out basins in training context | **real** — 70% of eval basins were exposed; now fixed, and fixing it slightly IMPROVED our result (0.8447 → 0.8584) |
+
+### RETRACTED: "the two-path design costs −0.25"
+
+That was a **training-budget artefact**, not an architectural cost. At 5x
+budget K=0 goes 0.4539 → **0.6066** (+0.153) and the large-K decay disappears
+(K=32: 0.8053 → 0.8432). Our model was undertrained — 24,000 query-windows
+against the LSTM's 384,000 — and the no-context mode absorbed the shortfall.
+
+| | K=0 | peak | K=32 |
+|---|---|---|---|
+| 1x budget | 0.4539 | 0.8447 | 0.8053 |
+| **5x budget** | **0.6066** | **0.8642** | **0.8432** |
+
+## The pattern worth naming
+
+Five measurements in this session compared against something weaker than the
+real alternative: the damaged K=0 baseline, the undertrained-looking LSTM, "no
+neighbour info" when the fair comparator was training on them, a protocol that
+forced context 190 km away, and a config table read instead of the tensors.
+Each was individually defensible; together they biased consistently in one
+direction. **Every one was caught by someone asking whether the setup matched
+the real situation — none by the pre-registered plan.**
