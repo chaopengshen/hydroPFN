@@ -71,6 +71,15 @@ def main(a):
     hold = a.holdout.split(",")
     te = np.flatnonzero(np.isin(region, hold))
     tr = np.flatnonzero(~np.isin(region, hold))
+    if a.include_test_gauges:
+        # THE GAUGED CEILING. This LSTM trains on the test basins too, so it
+        # answers "how well can this gauge be predicted if you HAVE its
+        # record". Our PUB model must be read against it: beating it is not
+        # automatically wrong (real-time neighbours are a different
+        # information set from historical calibration at the gauge) but it
+        # demands an explanation.
+        tr = np.arange(len(region))
+        print("  CEILING ARM: test gauges INCLUDED in training", flush=True)
     print(f"leave-region-out {hold}: {len(te)} held out / {len(tr)} train "
           f"| {DEVICE}", flush=True)
 
@@ -84,6 +93,11 @@ def main(a):
 
     T = X.shape[1]
     seq = a.patch * a.win                      # same span as the PUB window
+    if a.train_end:
+        print(f"  TEMPORAL SPLIT: training windows end by day {a.train_end}; "
+              f"eval at day {a.eval_start * a.patch}", flush=True)
+        if a.eval_start * a.patch < a.train_end:
+            raise SystemExit("eval window is inside the training period")
     net = RegionalLSTM(forc.shape[-1], As.shape[1], a.hidden,
                        a.layers).to(DEVICE)
     print(f"  RegionalLSTM {sum(p.numel() for p in net.parameters())/1e6:.2f}M "
@@ -97,7 +111,8 @@ def main(a):
         net.train(); tot = 0.0
         for _ in range(a.steps):
             b = rng.choice(tr, size=a.batch, replace=False)
-            s = rng.integers(0, T - seq)
+            hi = (a.train_end - seq) if a.train_end else (T - seq)
+            s = rng.integers(0, max(1, hi))
             x = torch.tensor(forc[b, s:s + seq], device=DEVICE)
             y = torch.tensor(q[b, s:s + seq], device=DEVICE)
             aa = torch.tensor(As[b], device=DEVICE)
@@ -154,7 +169,13 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--eval-start", type=int, default=200)
+    ap.add_argument("--eval-start", type=int, default=200,
+                    help="evaluation window start, in PATCHES")
+    ap.add_argument("--train-end", type=int, default=None,
+                    help="training windows must end by this DAY")
+    ap.add_argument("--include-test-gauges", action="store_true",
+                    help="train on the held-out basins too -- the GAUGED "
+                         "CEILING arm")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="lstm")
     main(ap.parse_args())

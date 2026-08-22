@@ -50,15 +50,16 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
-               geo_rank=None):
+               geo_rank=None, start_lo=0, start_hi=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
     -- a context basin from a different decade would be a different question.
     """
     N, V = Xp.shape[1], Xp.shape[2]
+    hi = (N - win) if start_hi is None else min(start_hi, N - win)
     s = fixed_start if fixed_start is not None else int(
-        rng.integers(0, max(1, N - win)))
+        rng.integers(start_lo, max(start_lo + 1, hi)))
     sl = slice(s, s + win)
 
     if K == 0:
@@ -146,6 +147,25 @@ def main(a):
           f"{np.median(dist_tr):.2f} deg; nearest ANY basin: median "
           f"{np.median(dist_all):.2f} deg", flush=True)
 
+    # TEMPORAL SPLIT. Without --train-end, training windows are drawn from
+    # the WHOLE record including the evaluation window, so the model has seen
+    # that stretch of weather through the training-region basins. That leaves
+    # period memorisation uncontrolled: the model could recall 1988-90 rather
+    # than infer from context. Setting --train-end confines training to an
+    # earlier period and --eval-start to a later one, which is the only way to
+    # separate "conditions on neighbours" from "remembers this weather".
+    train_end_patch = (a.train_end // a.patch) if a.train_end else None
+    if train_end_patch:
+        print(f"  TEMPORAL SPLIT: train windows start before patch "
+              f"{train_end_patch} (day {a.train_end}); eval at patch "
+              f"{a.eval_start} (day {a.eval_start * a.patch})", flush=True)
+        if a.eval_start < train_end_patch:
+            raise SystemExit("eval window is inside the training period")
+    else:
+        print("  WARNING: no temporal split -- training windows span the "
+              "whole record INCLUDING the evaluation window. Period "
+              "memorisation is uncontrolled. See Diagnosis.md.", flush=True)
+
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                       d_ffd=a.d_ffd, k_summary=a.k_summary)
     net = PUBModel(enc, depth=a.conn_depth,
@@ -169,7 +189,8 @@ def main(a):
                 pool = tr[tr != q]
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
                                      a.win, obs_col, a.retrieval, nn_rank,
-                                     geo_rank=geo_rank)
+                                     geo_rank=geo_rank,
+                                     start_hi=train_end_patch)
                 tasks.append(t)
             b = collate(tasks)
             rec = net(b)
@@ -263,7 +284,12 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--eval-start", type=int, default=200)
+    ap.add_argument("--eval-start", type=int, default=200,
+                    help="evaluation window start, in PATCHES")
+    ap.add_argument("--train-end", type=int, default=None,
+                    help="training windows must start before this DAY. "
+                         "Without it there is no temporal split and period "
+                         "memorisation is uncontrolled -- see Diagnosis.md")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="pub")
     main(ap.parse_args())
