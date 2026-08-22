@@ -39,7 +39,9 @@ import torch
 from hydropfn.data.forcing import (CLIMATE_STATICS, MASK_KINDS,  # noqa: E402
                                    load_camels, patchify, sample_mask,
                                    synthetic)
-from hydropfn.models.site_encoder import SiteEncoder, masked_mse
+from hydropfn.models.site_encoder import (SiteEncoder,  # noqa: E402
+                                          load_stefaland_trunk,
+                                          masked_mse)
 from hydropfn.paths import LOGS
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -183,7 +185,15 @@ def main(a):
     doy = doy.astype(np.float32)
     obs_col = Xp.shape[2] - 1
 
-    net = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth).to(DEVICE)
+    net = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
+                      d_ffd=a.d_ffd)
+    if a.stefaland:
+        # Only the trunk can transfer; see docs/stefaland_reuse.md. Whether it
+        # HELPS is the open question this flag exists to answer -- their trunk
+        # learned to mix per-timestep tokens from per-variable MLPs, ours mixes
+        # patch projections plus variable-ID embeddings.
+        load_stefaland_trunk(net, a.stefaland)
+    net = net.to(DEVICE)
     print(f"  SiteEncoder {sum(p.numel() for p in net.parameters())/1e6:.1f}M "
           f"params, window {a.win} patches = {a.win*a.patch} days", flush=True)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
@@ -260,6 +270,12 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="synth")
+    ap.add_argument("--d-ffd", type=int, default=512,
+                    help="512 matches StefaLand's trunk exactly; 1024 (=4*d) "
+                         "is the usual transformer default")
+    ap.add_argument("--stefaland", default=None,
+                    help="path to StefalandOriginalGlobal20.pt; initialises "
+                         "the TRUNK only")
     ap.add_argument("--holdout", default=None,
                     help="comma-separated USGS region prefixes to hold out, "
                          "e.g. 01,11,17 (default: the first three)")

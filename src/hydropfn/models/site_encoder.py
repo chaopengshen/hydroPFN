@@ -151,3 +151,67 @@ def masked_mse(recon, target, vis, valid):
     """
     w = ((1.0 - vis) * valid).unsqueeze(-1)
     return ((recon - target) ** 2 * w).sum() / w.sum().clamp(min=1.0)
+
+
+def load_stefaland_trunk(net: "SiteEncoder", ckpt_path: str,
+                         verbose: bool = True) -> dict:
+    """Initialise this encoder's trunk from a StefaLand checkpoint.
+
+    ONLY the trunk transfers -- 2.108M of StefaLand's 4.771M parameters. Its
+    input embeddings are one MLP per NAMED variable (keyed to a global dataset:
+    `P`, `MSWEP_P`, `GMTED_elevation`), whereas ours are a shared projection
+    plus a variable-ID table; there is nothing to map between them. See
+    docs/stefaland_reuse.md for the tensor-by-tensor account.
+
+    Requires `d_ffd=512` (StefaLand's, not the usual 4*d).
+
+    OPEN QUESTION this function exists to settle: their trunk learned to mix
+    tokens built from per-TIMESTEP scalars by per-variable MLPs. Ours mixes
+    16-day PATCH projections plus variable-ID embeddings. The shapes match; the
+    representation space does not. So transfer may be neutral or harmful, and
+    the honest test is two runs identical but for the init.
+
+    Returns a report; ALWAYS printed, because a `strict=False` load that
+    transfers nothing looks exactly like one that transfers everything.
+    """
+    import torch as _t
+    ck = _t.load(ckpt_path, map_location="cpu", weights_only=False)
+    sd = ck.get("model_state_dict", ck)
+
+    src = {k[len("encoder.transformer_encoder."):]: v
+           for k, v in sd.items()
+           if k.startswith("encoder.transformer_encoder.")}
+    tgt = net.trunk.state_dict()
+    take, skip = {}, []
+    for k, v in tgt.items():
+        s = src.get(k)
+        if s is not None and tuple(s.shape) == tuple(v.shape):
+            take[k] = s
+        else:
+            skip.append((k, tuple(v.shape),
+                         tuple(s.shape) if s is not None else None))
+    net.trunk.load_state_dict({**tgt, **take})
+
+    n_take = sum(v.numel() for v in take.values())
+    n_tot = sum(v.numel() for v in tgt.values())
+    rep = {"loaded_tensors": len(take), "trunk_tensors": len(tgt),
+           "loaded_params": n_take, "trunk_params": n_tot,
+           "skipped": skip[:8]}
+    if verbose:
+        print(f"  StefaLand trunk init: {len(take)}/{len(tgt)} tensors, "
+              f"{n_take/1e6:.3f}M/{n_tot/1e6:.3f}M params "
+              f"({n_take/max(n_tot,1):.0%})", flush=True)
+        if skip:
+            print(f"    NOT loaded ({len(skip)}), first few: {skip[:3]}",
+                  flush=True)
+        if n_take == 0:
+            print("    WARNING: nothing transferred -- check d_ffd and depth",
+                  flush=True)
+    # encoder_norm -> our norm_in, if shapes agree
+    if "encoder_norm.weight" in sd and \
+            sd["encoder_norm.weight"].shape == net.norm_in.weight.shape:
+        net.norm_in.load_state_dict({"weight": sd["encoder_norm.weight"],
+                                     "bias": sd["encoder_norm.bias"]})
+        if verbose:
+            print("    encoder_norm -> norm_in: loaded", flush=True)
+    return rep
