@@ -66,7 +66,15 @@ class SiteEncoder(nn.Module):
 
     def __init__(self, n_attr: int, n_vars: int, patch: int = 16,
                  d: int = D_MODEL, depth: int = 4, heads: int = 4,
-                 k_summary: int = 3, dropout: float = 0.1):
+                 k_summary: int = 3, dropout: float = 0.1,
+                 d_ffd: int = 512):
+        """`d_ffd` defaults to 512, not the usual 4*d = 1024, so the trunk has
+        the SAME shape as StefaLand's `encoder.transformer_encoder` and its
+        2.108M parameters load directly. Verified against the checkpoint --
+        see docs/stefaland_reuse.md. The input embeddings do NOT transfer
+        (StefaLand uses one MLP per named variable; we use a shared projection
+        plus a variable-ID embedding), so the trunk is the reusable half.
+        """
         super().__init__()
         self.d, self.patch, self.n_vars, self.k = d, patch, n_vars, k_summary
 
@@ -82,7 +90,7 @@ class SiteEncoder(nn.Module):
 
         self.norm_in = nn.LayerNorm(d)
         layer = nn.TransformerEncoderLayer(
-            d, heads, dim_feedforward=4 * d, dropout=dropout,
+            d, heads, dim_feedforward=d_ffd, dropout=dropout,
             activation="gelu", batch_first=True, norm_first=True)
         self.trunk = nn.TransformerEncoder(layer, depth)
 

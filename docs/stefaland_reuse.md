@@ -41,24 +41,81 @@ observation channels into the input stack and make them maskable.**
 
 ## What transfers, tensor by tensor
 
-Our `SiteEncoder` (`models/site_encoder.py`) against StefaLand's encoder:
+**CORRECTED 2026-08-21 by inspecting the actual checkpoint.** An earlier
+version of this table was written from the config files and was wrong in two
+important ways. Read the tensors, not the yaml.
 
-| our tensor | shape | transfers? | note |
+The checkpoint is `{"epoch", "model_state_dict", "optim_state_dict", ...}`,
+**485 tensors, 4.771M parameters**:
+
+| module | tensors | params | what it actually is |
 |---|---|---|---|
-| `static_mlp` | 49 → 256 → 256 | **yes** | same 49 attributes, same width |
-| `value_proj` | patch → 256 | **partly** | same width; re-init if their patching differs |
-| `var_emb` rows for `P, RelHum, SWd, Tmax, Tmin` | 5 × 256 | **yes** | identical variables |
-| `var_emb` row for `QObs` | 1 × 256 | **no** | new — it was never an input |
-| `trunk` (4 layers, 4 heads, d 256, FFN 512) | — | **yes** | shapes chosen to match exactly |
-| `pos_emb`, `doy_proj` | — | **partly** | transfer if their windowing matches |
-| `summary_q`, `mask_tok`, `head` | — | **no** | new; StefaLand has no summary tokens |
+| `encoder.transformer_encoder` | 48 | 2.108M | **4 standard `nn.TransformerEncoderLayer`s**, d=256, FFN **512** |
+| `static_embedding` | 193 | 0.853M | **one MLP PER ATTRIBUTE** (1→64→256), 48 named attributes |
+| `static_projection` | 192 | 0.793M | per-attribute reconstruction heads |
+| `decoder` | 4 | 0.526M | **an LSTM** (`weight_ih_l0` (1024,256)), not an MLP |
+| `positional_encoding` | 1 | 0.256M | learned `position_embedding` (1000, 256) |
+| `time_series_embedding` | 21 | 0.085M | **one MLP PER VARIABLE** (1→64→256), 5 variables |
+| `time_series_projection` | 20 | 0.083M | per-variable reconstruction heads |
+| `enc_2_dec_embedding` | 2 | 0.066M | 256→256 linear |
+| `encoder_norm`, `decoder_norm` | 4 | 0.002M | LayerNorms |
 
-So the great majority of parameters — the trunk plus both input paths — load
-unchanged. Fresh parameters are one embedding row, the summary queries, the
-mask token, and the reconstruction head.
+### The two things the earlier table got wrong
 
-**This is why `d = 256`.** The width was not chosen for capacity; it was chosen
-so this table has "yes" in it.
+**1. There is no shared static MLP and no variable-ID embedding table.**
+StefaLand embeds **each named variable with its own 2-layer MLP**:
+
+```
+time_series_embedding.embeddings1.P.weight        (64, 1)
+time_series_embedding.embeddings2.P.weight        (256, 64)
+static_embedding.numerical_embeddings1.MSWEP_P.weight  (64, 1)
+```
+
+So "the static path is 49→256→256" was wrong — it is 48 separate 1→64→256
+MLPs keyed by attribute NAME. And "`var_emb` rows for P/RelHum/SWd/Tmax/Tmin
+transfer" was wrong — there is no embedding table to take rows from.
+
+The names are also the GLOBAL dataset's (`MSWEP_P`, `GMTED_elevation`,
+`catchsize`, …), **not CAMELS's** (`prcp_daymet`, `elev_mean`, …). Even where
+concepts overlap, the tensors are keyed by strings that do not match.
+
+**2. It tokenises per TIMESTEP, not per patch.** `embeddings1.P.weight` is
+(64, 1) — it consumes a scalar. With `seq_len` 365 that is 365 tokens per
+variable, and the learned `position_embedding` is (1000, 256) accordingly. Our
+encoder uses 16-day patches, so even the positional semantics differ.
+
+### What this leaves
+
+| our tensor | transfers? | condition |
+|---|---|---|
+| **trunk** (4 layers, d 256) | **YES — 2.108M** | must set FFN to **512**, not 4·d=1024, and match `norm_first` |
+| `encoder_norm` | **yes** | — |
+| `positional_encoding` | **only if** we switch to per-timestep tokens | we use patches, so no |
+| `static_mlp` (shared 26→256→256) | **no** | they have 48 per-attribute MLPs, different names |
+| `value_proj` (shared patch→256) | **no** | they have 5 per-variable MLPs on scalars |
+| `var_emb` (variable-ID table) | **no** | no such table exists in their design |
+| `summary_q`, `mask_tok`, `head` | **no** | new |
+
+**Transferable: the trunk, ~2.11M of 4.77M ≈ 44% of parameters** (50% if the
+positional encoding could be used). That is the part encoding *how to mix
+tokens* — arguably the genuinely reusable knowledge — while the embeddings are
+dataset-specific plumbing we would have to relearn for CAMELS regardless.
+
+### The design trade-off this exposes
+
+Their per-variable MLPs and our variable-ID embeddings are not just different
+implementations of the same idea:
+
+| | StefaLand: MLP per variable | ours: shared projection + variable-ID |
+|---|---|---|
+| new variable | a new MLP, retrain | one embedding row |
+| any subset / any order | fixed name set | native |
+| **weight transfer** | **their 5 forcing MLPs are reusable** | **not reusable** |
+
+So adopting their parameterisation would buy the forcing embeddings but cost
+the flexibility that motivates the whole design (a variable is an ID, not a
+slot). **Recommendation: transfer the trunk, keep our embeddings fresh.**
+That is why `d_ffd` is now 512 in `SiteEncoder` rather than 4·d.
 
 ## How to load
 
