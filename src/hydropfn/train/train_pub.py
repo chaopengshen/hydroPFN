@@ -154,11 +154,19 @@ def main(a):
     # than infer from context. Setting --train-end confines training to an
     # earlier period and --eval-start to a later one, which is the only way to
     # separate "conditions on neighbours" from "remembers this weather".
-    train_end_patch = (a.train_end // a.patch) if a.train_end else None
+    # A window is `win` patches long, so a window STARTING at the cutoff would
+    # extend past it. Subtract the window length so training genuinely ends by
+    # --train-end. Without this our model trained to day 9472 while the LSTM
+    # baseline stopped at 9000 -- 472 extra days, and the ones nearest the
+    # evaluation period. An asymmetry in our own favour is the kind to be most
+    # suspicious of.
+    train_end_patch = ((a.train_end // a.patch) - a.win) if a.train_end else None
     if train_end_patch:
-        print(f"  TEMPORAL SPLIT: train windows start before patch "
-              f"{train_end_patch} (day {a.train_end}); eval at patch "
-              f"{a.eval_start} (day {a.eval_start * a.patch})", flush=True)
+        print(f"  TEMPORAL SPLIT: train windows END by patch "
+              f"{train_end_patch + a.win} (day {a.train_end}); eval at patch "
+              f"{a.eval_start} (day {a.eval_start * a.patch}) -- gap "
+              f"{(a.eval_start - train_end_patch - a.win) * a.patch} days",
+              flush=True)
         if a.eval_start < train_end_patch:
             raise SystemExit("eval window is inside the training period")
     else:
