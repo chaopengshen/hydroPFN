@@ -1,5 +1,12 @@
 # Does context actually let us predict an ungauged site?
 
+> **RESULT 2026-08-21: NO — for a fully ungauged basin, context adds exactly
+> nothing.** Both retrieval arms are flat (gain +0.0000); with similar
+> retrieval context actively hurts at small K. The pre-registered meaning of a
+> flat curve applies: the cross-site premise does not hold for this task, and
+> it is recorded here as loudly as a positive would have been. Details at the
+> bottom of this file.
+
 This is the load-bearing claim of the whole design. Everything else — the DEM
 sampler, the merged site encoder, the StefaLand reuse — is scaffolding around
 it. It has **not** been tested for time series.
@@ -95,3 +102,77 @@ real.
   training-time context-size randomisation first, then re-test.
 - **Flat from K=0** → the cross-site premise fails for time series. That is a
   publishable negative and should be recorded as loudly as a positive.
+
+
+---
+
+## RESULT — T-B and T-C fail, T-E is moot
+
+40 epochs, leave-region-out (`01,11,17`), 124 held-out query basins, identical
+query basins and evaluation window across every arm and every K.
+
+| K | similar: model | ctx_mean | nn_donor | random: model |
+|---|---|---|---|---|
+| 0 | **0.5590** | — | — | **0.6234** |
+| 1 | 0.4908 | 0.1517 | 0.1517 | 0.6217 |
+| 2 | 0.5266 | 0.3119 | 0.1517 | 0.6227 |
+| 4 | 0.5282 | 0.3930 | 0.1517 | 0.6219 |
+| 8 | 0.5393 | 0.4653 | 0.1517 | 0.6216 |
+| 16 | 0.5514 | 0.4655 | 0.1517 | 0.6217 |
+| 32 | 0.5584 | 0.4333 | 0.1517 | 0.6215 |
+| **gain** | **+0.0000** | | | **+0.0000** |
+
+- **T-B FAIL.** Context never beats K=0 in either arm.
+- **T-C FAIL.** Not a rising curve, not even the "one donor" step. Flat.
+- **T-E moot.** With no context effect to compare, similar-vs-random cannot
+  discriminate. It did reveal something else though (below).
+- **T-D partial pass, for the wrong reason.** The model beats `ctx_mean`
+  (0.466) and `nn_donor` (0.152) — but through its per-site pathway, not
+  through context. Beating a donor baseline without using donors is not the
+  claim.
+
+**Training with retrieved context DEGRADED the per-site path.** The random
+arm's K=0 is 0.6234; the similar arm's is 0.5590. Same architecture, same data,
+same seed — the only difference is which context basins were sampled during
+training. Some of the model's capacity went into a pathway that turned out to
+be worthless, and the useful pathway got worse for it.
+
+### Why — the explanation that fits, and it was foreseeable
+
+For a **fully** ungauged basin, ask what another basin's hydrograph could add.
+The query's own forcings already carry its weather. Its attributes already say
+what kind of basin it is. Training already taught how that kind of basin
+responds to that weather. Context basins sit in **different regions with
+different weather at the same instant**, so their streamflow at time *t* says
+almost nothing about the query's streamflow at time *t*.
+
+**Attribute-similar is not weather-correlated.** That is the crux, and it is
+the structural difference from unit D, where the context was the query site's
+OWN measurements — irreducibly site-specific information that no attribute
+table contains. That is why unit D was positive and this is not.
+
+### What this does and does not kill
+
+Does not kill: **own-site context** (proposal use cases 1 and 2 — at-a-station
+ratings and few-shot site updating). Unit D's +0.127 and its rising curve stand.
+
+Kills, as currently framed: **PUB by neighbouring gauged basins** (use case 5).
+For zero-gauge prediction, forcings + attributes + a trained model is the whole
+story, and the connector is dead weight that also costs per-site accuracy.
+
+### The follow-up worth running
+
+The interesting regime is not zero-gauge, it is **sparse-gauge**: give the
+query basin a FEW of its own streamflow patches and hide the rest. That is
+unit D's setting transposed to time series, and it is the one where context
+carries information the attributes cannot. If that curve rises, the honest
+claim becomes "in-context conditioning works on a site's own sparse
+observations" — narrower than the original pitch, but true and still valuable.
+
+Two secondary possibilities not yet excluded, in order of plausibility:
+1. **Contemporaneous context is the wrong construction.** Neighbouring basins
+   might inform via shared weather only if they are actually nearby. `geo`
+   retrieval within the held-out region would leak, but geographic proximity
+   among training basins for a training query is testable.
+2. Architecture: one cross-attention layer and 3 summary tokens per site may be
+   too thin. Weak, given that the effect is exactly zero rather than small.

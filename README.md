@@ -22,7 +22,7 @@ are on the page next to the passes.
 | **B · terrain (DEM)** | built — conditional diffusion sampler, beats interpolation on every metric |
 | **D · measurement** | built — in-context model, cross-variable gate replicates 9/9 |
 | **A · site (static + series, MERGED)** | trained on real CAMELS, leave-region-out — ablations pass, **U3 gate (beat a regional LSTM) not yet run** |
-| connector / decoders | working single-modality version exists; general version templated |
+| connector (cross-site) | **built and TESTED — for fully ungauged basins it adds NOTHING** (gain +0.0000, both retrieval arms). See `docs/pub_test_plan.md`. |
 
 ---
 
