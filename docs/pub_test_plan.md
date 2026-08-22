@@ -365,3 +365,55 @@ steps instead of 1/6, and re-measure. Two outcomes:
 - **K=0 stays near 0.46** → something in the context machinery genuinely
   damages the per-site path, and the two-path design has a real cost that the
   standalone unit-A number was hiding.
+
+
+---
+
+## CONTROLLED COMPARISON — and a correction to the headline number
+
+Every number below is the SAME holdout (`01,11,17`), the SAME 32-patch window
+starting at patch 200, the same log1p target, the same encoder.
+
+| model | R² |
+|---|---|
+| PUB model, **K=4 with context** | **0.8528** |
+| **unit A standalone** (no context capability) | **0.7879** |
+| regional LSTM | 0.7498 |
+| PUB model, K=0 (3/8 weighting) | 0.5259 |
+| PUB model, K=0 (1/6 weighting) | 0.4714 |
+
+### The +0.38 gain was measured against a damaged baseline
+
+Every earlier statement of "context is worth +0.38" compared K=4 against the
+PUB model's own K=0. But that K=0 is crippled: the SAME encoder reaches 0.7879
+when trained without context machinery. Measured against a competent
+no-context model, context buys:
+
+- **+0.065** over unit A standalone (0.8528 vs 0.7879)
+- **+0.103** over the regional LSTM (0.8528 vs 0.7498)
+
+Both real, both beating the field's workhorse — and roughly **a sixth** of what
+was previously reported. The +0.38 figure should not be used.
+
+### The two-path design has a large, genuine cost
+
+Adding context capability costs the no-context mode **−0.26** (0.7879 →
+0.5259). Re-weighting K=0 from 1/6 to 3/8 of training steps recovers only
++0.055 of that, essentially free (context modes move by ≤0.002) but nowhere
+near enough.
+
+This is not an evaluation artefact — the window is now identical across all
+arms — and it is not undertraining alone. It is interference between the two
+pathways.
+
+**Deployment consequence:** do not ship one model for both regimes. Use the PUB
+model where neighbouring gauges exist and unit A standalone where they do not.
+Or find a training scheme that keeps both strong — separate heads, distillation
+from a standalone teacher, or far heavier K=0 weighting than tested here.
+
+### Note on window choice
+
+Unit A scores 0.7879 at window 200 versus 0.7631 averaged over random windows,
+so patch 200 is a slightly EASIER period. All comparisons above are at window
+200, so this affects none of them — but it does mean the fixed-window numbers
+throughout this document are mildly optimistic in absolute terms.

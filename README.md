@@ -191,17 +191,29 @@ The load-bearing claim. A query basin in a **region the model never trained
 on**, with **every streamflow observation hidden**, predicted by conditioning
 on K nearby gauged basins at inference — no retraining.
 
-| K nearby gauges | **model** | nn_donor | ctx_mean |
-|---|---|---|---|
-| 0 | 0.4714 | — | — |
-| 1 | 0.8293 | 0.785 | 0.785 |
-| **4** | **0.8528** | 0.785 | 0.829 |
-| 16 | 0.8294 | 0.785 | 0.766 |
-| 32 | 0.8053 | 0.785 | 0.698 |
+All at the same holdout, same window, same target:
 
-**+0.38 R² from context**, beating both a nearest-neighbour donor and
-donor-averaging at every K. Donor-averaging is the method operational PUB
-actually uses, so that is the bar that matters.
+| model | R² |
+|---|---|
+| **with K=4 nearby gauges** | **0.8528** |
+| unit A standalone (no context capability) | 0.7879 |
+| regional LSTM | 0.7498 |
+| donor-averaging (`ctx_mean`, K=4) | 0.8293 |
+| nearest-neighbour donor | 0.7850 |
+
+**Context is worth +0.065 over the best non-context model and +0.103 over a
+regional LSTM**, and it beats donor-averaging — the method operational PUB
+actually uses — at every K.
+
+> An earlier version of this README claimed **+0.38** from context. That
+> compared against the PUB model's own K=0 mode (0.4714), which is *damaged*:
+> the same encoder reaches 0.7879 trained without context machinery. The
+> correct comparison is against a competent no-context model. **Do not use the
+> +0.38 figure.**
+
+**The two-path design costs something real**: adding context capability drops
+the no-context mode from 0.7879 to 0.5259. Ship the PUB model where neighbours
+exist and unit A where they do not.
 
 Two findings behind it, both the product of being wrong first:
 

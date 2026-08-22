@@ -55,12 +55,20 @@ def standardise(x, valid):
     return mu.astype(np.float32), sd.astype(np.float32)
 
 
-def make_batch(Xp, A, valid_p, doy, idx, rng, win, kind=None, n_obs=1):
-    """One batch: a random window per site, plus a sampled mask."""
+def make_batch(Xp, A, valid_p, doy, idx, rng, win, kind=None, n_obs=1,
+               fixed_start=None):
+    """One batch: a window per site, plus a sampled mask.
+
+    `fixed_start` pins the window so this evaluation is comparable to the PUB
+    and LSTM runs, which both score at patch 200. Averaging over random windows
+    instead answers a different question and the two numbers must not be
+    compared.
+    """
     N = Xp.shape[1]
     b_x, b_v, b_val, b_doy = [], [], [], []
     for i in idx:
-        s = int(rng.integers(0, max(1, N - win)))
+        s = (fixed_start if fixed_start is not None
+             else int(rng.integers(0, max(1, N - win))))
         sl = slice(s, s + win)
         b_x.append(Xp[i, sl])
         b_val.append(valid_p[i, sl])
@@ -73,7 +81,7 @@ def make_batch(Xp, A, valid_p, doy, idx, rng, win, kind=None, n_obs=1):
 
 
 def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch,
-             clim_cols=None, phys_cols=None):
+             clim_cols=None, phys_cols=None, fixed_start=None):
     """Per-mask-type reconstruction R2 on the observation channel, plus the
     attribute ablations.
 
@@ -92,7 +100,7 @@ def evaluate(net, Xp, A, valid_p, doy, idx, rng, win, n_obs, obs_col, batch,
         erng = np.random.default_rng(0)
         for i in range(0, len(idx), batch):
             b = make_batch(Xp, A, valid_p, doy, idx[i:i + batch], erng, win,
-                           kind, n_obs)
+                           kind, n_obs, fixed_start=fixed_start)
             with torch.no_grad():
                 r = net(b)["recon"]
                 b0 = dict(b); b0["attrs"] = torch.zeros_like(b["attrs"])
@@ -226,7 +234,7 @@ def main(a):
     clim_cols = [i for i, n in enumerate(names) if n in CLIMATE_STATICS]
     phys_cols = [i for i, n in enumerate(names) if n not in CLIMATE_STATICS]
     df = evaluate(net, Xp, A_s, valid_p, doy, te, rng, a.win, n_obs, obs_col,
-                  a.batch, clim_cols, phys_cols)
+                  a.batch, clim_cols, phys_cols, fixed_start=a.eval_start)
     df.to_csv(LOGS / f"site_encoder_{a.tag}.csv", index=False)
     pd.set_option("display.width", 200)
     print("\n=== streamflow reconstruction R2 on held-out sites, by mask ===")
@@ -270,6 +278,10 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="synth")
+    ap.add_argument("--eval-start", type=int, default=None,
+                    help="pin the evaluation window (patch index) so the "
+                         "number is comparable to the PUB and LSTM runs, "
+                         "which both score at 200")
     ap.add_argument("--d-ffd", type=int, default=512,
                     help="512 matches StefaLand's trunk exactly; 1024 (=4*d) "
                          "is the usual transformer default")
