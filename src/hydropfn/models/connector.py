@@ -23,6 +23,39 @@ import torch
 import torch.nn as nn
 
 
+class GeoEncoding(nn.Module):
+    """Fourier encoding of each site's DISPLACEMENT from the query site.
+
+    Factored out because it must be attachable to whichever path actually
+    mixes context. It was originally wired only into CrossSiteConnector, and
+    measured nothing (+0.003) -- because the connector turns out to carry
+    almost no signal: dropping it entirely costs 0.001 median NSE at K=4. The
+    time-aligned path does the work, and it had no geometry. Testing geo on
+    the dead path was a mis-placed experiment, not a refuted hypothesis.
+
+    Longitude is scaled by a FIXED reference latitude, never the query's own:
+    cos(query_lat) is the better metric but makes the encoding a function of
+    ABSOLUTE latitude, a region-identifying channel that would undermine
+    leave-region-out. Pinned by test_connector_geo_translation_invariant.
+    """
+
+    LON_SCALE = 0.766                    # cos(40 deg), CONUS mid-latitude
+
+    def __init__(self, d: int, n_freq: int = 8):
+        super().__init__()
+        self.register_buffer("freqs", 2.0 ** torch.arange(n_freq).float() * 0.5)
+        self.proj = nn.Linear(4 * n_freq + 1, d)
+
+    def forward(self, latlon: torch.Tensor) -> torch.Tensor:
+        """latlon (B,S,2) degrees, site 0 = query -> (B,S,d)."""
+        rel = latlon - latlon[:, :1]
+        rel = torch.stack([rel[..., 0], rel[..., 1] * self.LON_SCALE], dim=-1)
+        ang = rel[..., None] * self.freqs
+        feat = torch.cat([ang.sin().flatten(-2), ang.cos().flatten(-2),
+                          rel.norm(dim=-1, keepdim=True)], dim=-1)
+        return self.proj(feat)
+
+
 class CrossSiteConnector(nn.Module):
     """Attention over site-SUMMARY tokens.
 
@@ -33,24 +66,38 @@ class CrossSiteConnector(nn.Module):
     site axis, only a role embedding marking query vs context. Two sites with
     the same summary are interchangeable, which is what makes a *retrieved set*
     the right abstraction rather than an ordered list.
+
+    `geo` adds a RELATIVE-POSITION encoding: each context site gets a Fourier
+    embedding of its displacement from the QUERY. Until 2026-08-21 this module
+    had no geometry at all -- context was chosen by distance and then treated
+    as exchangeable, so the model could not tell a gauge 20 km away from one
+    300 km away. That is the obvious suspect for the decay at large K, since
+    without distance the only way to discount a far gauge is to discount all
+    of them. Displacement is relative, not absolute lat/lon, so the encoding
+    stays translation-invariant and cannot be used to memorise regions --
+    which matters under leave-region-out.
     """
 
     def __init__(self, d: int = 256, depth: int = 4, heads: int = 8,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, geo: bool = False, n_freq: int = 8):
         super().__init__()
         self.role = nn.Embedding(2, d)          # 0 = context, 1 = query
+        self.geo = GeoEncoding(d, n_freq) if geo else None
         layer = nn.TransformerEncoderLayer(
             d, heads, dim_feedforward=4 * d, dropout=dropout,
             activation="gelu", batch_first=True, norm_first=True)
         self.enc = nn.TransformerEncoder(layer, depth)
         self.norm = nn.LayerNorm(d)
 
-    def forward(self, tok: torch.Tensor, site_valid: torch.Tensor):
-        """tok (B,S,K,d); site_valid (B,S) 1.0 where the site slot is real."""
+    def forward(self, tok: torch.Tensor, site_valid: torch.Tensor,
+                latlon: torch.Tensor | None = None):
+        """tok (B,S,K,d); site_valid (B,S); latlon (B,S,2) degrees, optional."""
         B, S, K, d = tok.shape
         role = torch.zeros(B, S, dtype=torch.long, device=tok.device)
         role[:, 0] = 1
         x = tok + self.role(role)[:, :, None, :]
+        if self.geo is not None and latlon is not None:
+            x = x + self.geo(latlon)[:, :, None, :]
         x = x.reshape(B, S * K, d)
         pad = site_valid[:, :, None].expand(B, S, K).reshape(B, S * K).bool()
         h = self.enc(self.norm(x), src_key_padding_mask=~pad)
@@ -71,7 +118,8 @@ class PUBModel(nn.Module):
     """
 
     def __init__(self, encoder, d: int = 256, depth: int = 4, heads: int = 8,
-                 time_aligned: bool = False):
+                 time_aligned: bool = False, geo: bool = False,
+                 causal: bool = False, no_pooled: bool = False):
         """`time_aligned` adds a second cross-attention in which each query
         PATCH attends to the context patches at the SAME time position.
 
@@ -87,7 +135,23 @@ class PUBModel(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.time_aligned = time_aligned
-        self.connector = CrossSiteConnector(d, depth, heads)
+        # In causal mode the connector and the pooled cross-attention are
+        # SKIPPED, not masked. Site summaries pool over the whole window by
+        # construction, so any path that consumes them carries the future.
+        # What survives is the time-aligned path: query patch n attends to
+        # context patch n, built from data <= n by the causal site encoder.
+        self.causal = causal
+        # `no_pooled` skips the same path WITHOUT masking time. It exists so
+        # the causal ablation is not confounded: causal mode changes TWO
+        # things at once (time masking AND dropping the pooled path), and the
+        # pooled path is already known to cost ~0.18 at K=0. Comparing causal
+        # against a both-paths control would credit causality with that.
+        self.no_pooled = no_pooled or causal
+        self.connector = CrossSiteConnector(d, depth, heads, geo=geo)
+        # geo on the path that actually mixes context. Context tokens are
+        # tagged with their displacement from the query BEFORE tcross, so the
+        # attention can weight a neighbour by how far away it is.
+        self.tgeo = GeoEncoding(d) if geo else None
         self.cross = nn.MultiheadAttention(d, heads, batch_first=True)
         self.norm_q = nn.LayerNorm(d)
         self.norm_c = nn.LayerNorm(d)
@@ -106,20 +170,23 @@ class PUBModel(nn.Module):
         B, S = batch["vis"].shape[:2]
         flat = {k: v.reshape(B * S, *v.shape[2:]) for k, v in batch.items()
                 if k in ("attrs", "series", "vis", "valid", "doy")}
-        out = self.encoder(flat, return_hidden=True)
+        out = self.encoder(flat, return_hidden=True, causal=self.causal)
 
         K = 1 + self.encoder.k
-        summ = torch.cat([out["t_static"], out["t_series"]], dim=1)
-        summ = summ.reshape(B, S, K, -1)
-        summ = self.connector(summ, batch["site_valid"])
-
-        # query stream attends to ALL context-aware summaries
-        d = summ.shape[-1]
+        d = out["h_series"].shape[-1]
         hq = out["h_series"].reshape(B, S, -1, d)[:, 0]        # (B, N*V, d)
-        ctx = summ.reshape(B, S * K, d)
-        a, _ = self.cross(self.norm_q(hq), self.norm_c(ctx), self.norm_c(ctx),
-                          need_weights=False)
-        z = hq + a
+        if self.no_pooled:
+            z = hq
+        else:
+            summ = torch.cat([out["t_static"], out["t_series"]], dim=1)
+            summ = summ.reshape(B, S, K, -1)
+            summ = self.connector(summ, batch["site_valid"],
+                                  batch.get("latlon"))
+            # query stream attends to ALL context-aware summaries
+            ctx = summ.reshape(B, S * K, d)
+            a, _ = self.cross(self.norm_q(hq), self.norm_c(ctx),
+                              self.norm_c(ctx), need_weights=False)
+            z = hq + a
         N, V = batch["series"].shape[2], batch["series"].shape[3]
 
         if self.time_aligned and S > 1:
@@ -127,7 +194,10 @@ class PUBModel(nn.Module):
             # position -- (B*N) independent attentions with (S-1)*V keys each.
             h = out["h_series"].reshape(B, S, N, V, d)
             qs = h[:, 0].reshape(B * N, V, d)
-            ks = h[:, 1:].permute(0, 2, 1, 3, 4).reshape(B * N, (S - 1) * V, d)
+            hc = h[:, 1:]
+            if self.tgeo is not None and batch.get("latlon") is not None:
+                hc = hc + self.tgeo(batch["latlon"])[:, 1:, None, None, :]
+            ks = hc.permute(0, 2, 1, 3, 4).reshape(B * N, (S - 1) * V, d)
             ta, _ = self.tcross(self.norm_tq(qs), self.norm_tc(ks),
                                 self.norm_tc(ks), need_weights=False)
             z = z + ta.reshape(B, N, V, d).reshape(B, N * V, d)

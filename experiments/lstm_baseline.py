@@ -20,9 +20,16 @@ The comparison it licenses:
 
 Evaluation is deliberately made COMPARABLE to the PUB runs rather than
 maximally flattering to the LSTM: the same held-out basins, the same window,
-the same log1p target, and predictions aggregated to the same 16-day patches
-before scoring. Reporting daily NSE here and patch R² there would compare two
-different quantities.
+the same log1p target. BOTH resolutions are reported -- daily and 16-day
+means -- because train_pub.py scores DAILY values, and an earlier version of
+this file scored only 16-day means while claiming to match it. Aggregation
+generally raises R², so the resolution must be stated with every number.
+
+Two asymmetries remain, both FAVOURING our model, and both must be disclosed
+alongside any head-to-head:
+  * this LSTM is CAUSAL; our model is a bidirectional smoother that sees the
+    whole 512-day window, including days after the one it predicts.
+  * our model reads context basins' CONCURRENT discharge; this one cannot.
 """
 
 from __future__ import annotations
@@ -170,18 +177,44 @@ def main(a):
             y = q[b, s0:s0 + seq]
             aa = torch.tensor(As[b], device=DEVICE)
             p = net(x, aa).cpu().numpy()
-            # 16-day patch means, matching the PUB evaluation exactly
-            n = seq // a.patch
-            ys.append(y.reshape(len(b), n, a.patch).mean(-1))
-            ps.append(p.reshape(len(b), n, a.patch).mean(-1))
-    y = np.concatenate(ys).ravel(); p = np.concatenate(ps).ravel()
-    r2 = float(1 - ((y - p) ** 2).sum() / ((y - y.mean()) ** 2).sum())
-    print(f"\n=== regional LSTM, held-out basins, 16-day patches ===")
-    print(f"  R2 = {r2:+.4f}   (n = {y.size:,})")
+            # Keep DAILY values and aggregate at scoring time, so BOTH
+            # resolutions get reported. The previous version scored only
+            # 16-day means while train_pub.py scored daily values, under a
+            # comment claiming the two matched. They did not, and aggregation
+            # generally raises R2, so those numbers were never comparable.
+            ys.append(y)
+            ps.append(p)
+    y = np.concatenate(ys); p = np.concatenate(ps)
+
+    def _r2(u, v):
+        u, v = u.ravel(), v.ravel()
+        return float(1 - ((u - v) ** 2).sum() / ((u - u.mean()) ** 2).sum())
+
+    # Median per-basin NSE -- the metric the hydrology literature reports,
+    # and NOT the same quantity as the pooled R2 below. See nse_per_site in
+    # train_pub.py for why pooling inflates the score.
+    den = ((y - y.mean(1, keepdims=True)) ** 2).sum(1)
+    nse = 1 - ((y - p) ** 2).sum(1) / np.where(den > 0, den, np.nan)
+    nse = nse[np.isfinite(nse)]
+    nse_med, nse_pos = float(np.median(nse)), float((nse > 0).mean())
+
+    n = seq // a.patch
+    r2_daily = _r2(y, p)
+    r2_patch = _r2(y.reshape(-1, n, a.patch).mean(-1),
+                   p.reshape(-1, n, a.patch).mean(-1))
+    r2 = r2_daily
+    print(f"\n=== regional LSTM, held-out basins ===")
+    print(f"  R2 DAILY (pooled) = {r2_daily:+.4f}   (n = {y.size:,})")
+    print(f"  R2 16-d means     = {r2_patch:+.4f}")
+    print(f"  per-basin NSE med = {nse_med:+.4f}  "
+          f"({nse_pos:.0%} of {nse.size} basins > 0)")
+    print("  train_pub.py scores DAILY -- compare against that one.")
     print("\n  compare to the PUB runs on the same holdout:")
     print("    our K=0 (no context)   ~0.46      per-site pathway only")
     print("    our K=4 (with context) ~0.85      the claim")
-    pd.DataFrame([{"holdout": a.holdout, "seed": a.seed, "r2_patch": r2,
+    pd.DataFrame([{"holdout": a.holdout, "seed": a.seed,
+                   "r2_daily": r2_daily, "r2_patch16": r2_patch,
+                   "nse_median": nse_med, "nse_frac_pos": nse_pos,
                    "n": int(y.size)}]).to_csv(
         LOGS / f"lstm_baseline_{a.tag}.csv", index=False)
     print(f"\nwrote {LOGS / f'lstm_baseline_{a.tag}.csv'}")

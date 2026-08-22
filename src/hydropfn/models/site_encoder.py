@@ -103,7 +103,38 @@ class SiteEncoder(nn.Module):
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, patch))
 
-    def forward(self, batch: dict, return_hidden: bool = False) -> dict:
+    def _causal_mask(self, N: int, V: int, dev) -> torch.Tensor:
+        """(L,L) bool attention mask, True = FORBIDDEN. Time flows one way.
+
+        Sequence layout is [static, k summaries, N*V series], series index
+        n*V+v, so patch(idx) = idx // V.
+
+        Three rules, and each one is load-bearing:
+          * series token at patch p attends to series tokens at patch <= p.
+          * the STATIC token attends only to itself. If it could attend
+            everywhere it would become a global pool of the whole window, and
+            every series token attending to it would inherit the future
+            through the back door.
+          * NOTHING may attend to the summary tokens, for the same reason:
+            they pool over all time by construction. They are still computed
+            (they read everything) but in causal mode they are dead ends, and
+            PUBModel skips the pooled path that consumes them.
+        """
+        L = 1 + self.k + N * V
+        m = torch.ones(L, L, dtype=torch.bool, device=dev)      # all forbidden
+        s0 = 1 + self.k
+        idx = torch.arange(N * V, device=dev)
+        patch = idx // V                                        # (N*V,)
+        m[s0:, s0:] = patch[None, :] > patch[:, None]           # future = True
+        m[s0:, 0] = False                                       # static is a key
+        m[0, 0] = False                                         # static: self only
+        m[1:s0, :] = False                                      # summaries read all
+        m[:, 1:s0] = True                                       # ...but are never read
+        m[1:s0, 1:s0] = False                                   # (keep rows legal)
+        return m
+
+    def forward(self, batch: dict, return_hidden: bool = False,
+                causal: bool = False) -> dict:
         a, x = batch["attrs"], batch["series"]
         vis, valid, doy = batch["vis"], batch["valid"], batch["doy"]
         B, N, V, _ = x.shape
@@ -135,7 +166,9 @@ class SiteEncoder(nn.Module):
             torch.ones(B, 1 + self.k, device=dev, dtype=torch.bool),
             valid.reshape(B, N * V).bool()], dim=1)
 
-        h = self.trunk(self.norm_in(seq), src_key_padding_mask=~pad)
+        attn_mask = self._causal_mask(N, V, dev) if causal else None
+        h = self.trunk(self.norm_in(seq), mask=attn_mask,
+                       src_key_padding_mask=~pad)
         t_static = h[:, :1]
         t_series = h[:, 1:1 + self.k]
         h_series = h[:, 1 + self.k:]

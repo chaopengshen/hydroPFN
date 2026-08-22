@@ -51,7 +51,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
-               ctx_start=None):
+               ctx_start=None, latlon=None, self_da=0):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -104,17 +104,75 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                              np.tile(doy[csl], (S - 1, 1))], 0)
 
     vis = np.ones((S, win, V), np.float32)
-    vis[0, :, obs_col] = 0.0                                 # query ungauged
-    return {"attrs": A[sites], "series": ser, "vis": vis, "valid": val,
-            "doy": dd, "site_valid": np.ones(S, np.float32)}, sites, sl
+    if self_da:
+        # SELF-ASSIMILATION MODE. The query keeps its OWN discharge history
+        # and only the final `self_da` patches are hidden. This is the
+        # information set of Jamaat et al. (2025) and Yang et al. (2026):
+        # update using the target gauge's own recent record, then predict
+        # forward. It is NOT the ungauged-basin question the rest of this
+        # file asks -- it is a capability check on the same machinery.
+        #
+        # GRANULARITY CAVEAT: `vis` is per (patch, variable), so the finest
+        # hideable unit is one 16-day patch. A true 1-day-lead comparison
+        # would need sub-patch masking, which the token design cannot express
+        # -- value_proj collapses all 16 days into a single token. So this is
+        # a 16-day-ahead forecast given own history, not a 1-day-ahead one.
+        vis[0, :, obs_col] = 1.0
+        vis[0, -self_da:, obs_col] = 0.0
+    else:
+        vis[0, :, obs_col] = 0.0                             # query ungauged
+    # NOTE the context window is `csl` above, which differs from the query's
+    # `sl` whenever ctx_start is set. The caller reconstructs it, because the
+    # BASELINES must read the same window the model's context read. Before
+    # 2026-08-22 they always read `sl`, which in mode B handed
+    # nn_donor/ctx_mean the neighbours' CONCURRENT discharge -- exactly the
+    # information mode B withholds from the model. The tell: the baseline
+    # columns were byte-identical between the mode A and mode B result files.
+    task = {"attrs": A[sites], "series": ser, "vis": vis, "valid": val,
+            "doy": dd, "site_valid": np.ones(S, np.float32)}
+    # which query patches are actually being asked for -- eval scores ONLY
+    # these, so self-DA is not credited for copying back its visible history
+    task["_score"] = (vis[0, :, obs_col] == 0.0)
+    if latlon is not None:
+        # site 0 is the query; the connector encodes displacement FROM it
+        task["latlon"] = latlon[sites].astype(np.float32)
+    return task, sites, sl
 
 
 def collate(tasks):
     out = {}
     for k in tasks[0]:
+        if k.startswith("_"):
+            continue
         out[k] = torch.tensor(np.stack([t[k] for t in tasks]),
                               dtype=torch.float32, device=DEVICE)
     return out
+
+
+def nse_per_site(ys, ps):
+    """Median per-basin NSE, and the fraction of basins above zero.
+
+    NOT the same quantity as the pooled r2() below, and usually much lower.
+    Pooling concatenates every basin before subtracting a SINGLE global mean,
+    so between-basin variance in flow magnitude lands in the denominator and
+    inflates the score -- a model that only knew each basin's mean flow would
+    already post a respectable pooled R2. Per-basin NSE removes that free
+    variance by using each basin's OWN mean.
+
+    The hydrology literature reports median per-basin NSE (e.g. Kratzert 2019;
+    Jamaat et al. 2025 report 0.75 -> 0.82 under variational DA on 531 CAMELS
+    basins). Quoting our pooled number against theirs would be an apples-to-
+    oranges comparison in our favour.
+    """
+    v = []
+    for y, q in zip(ys, ps):
+        y, q = np.asarray(y).ravel(), np.asarray(q).ravel()
+        m = np.isfinite(y) & np.isfinite(q)
+        den = ((y[m] - y[m].mean()) ** 2).sum()
+        if den > 0:
+            v.append(1 - ((y[m] - q[m]) ** 2).sum() / den)
+    v = np.asarray(v)
+    return float(np.median(v)), float((v > 0).mean()), int(v.size)
 
 
 def r2(y, p):
@@ -225,10 +283,20 @@ def main(a):
 
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                       d_ffd=a.d_ffd, k_summary=a.k_summary)
-    net = PUBModel(enc, depth=a.conn_depth,
-                   time_aligned=a.time_aligned).to(DEVICE)
+    net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
+                   geo=a.geo, causal=a.causal,
+                   no_pooled=a.no_pooled).to(DEVICE)
     print(f"  PUBModel {sum(p.numel() for p in net.parameters())/1e6:.1f}M "
           f"params | context sizes sampled from {a.k_train}", flush=True)
+    if a.geo:
+        print("  GEO: connector sees displacement from the query", flush=True)
+    if a.no_pooled and not a.causal:
+        print("  NO-POOLED: pooled summary path skipped, time NOT masked "
+              "(control for --causal)", flush=True)
+    if a.causal:
+        print("  CAUSAL: site encoder time-masked; pooled summary path "
+              "SKIPPED (summaries pool over the whole window). Only the "
+              "time-aligned path survives.", flush=True)
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.OneCycleLR(
@@ -250,7 +318,9 @@ def main(a):
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
                                      a.win, obs_col, a.retrieval, nn_rank,
                                      geo_rank=geo_rank_train,
-                                     start_hi=train_end_patch, ctx_start=cs)
+                                     start_hi=train_end_patch, ctx_start=cs,
+                                     latlon=ll if a.geo else None,
+                                     self_da=a.self_da)
                 tasks.append(t)
             b = collate(tasks)
             rec = net(b)
@@ -284,27 +354,44 @@ def main(a):
                 t, sites, sl = build_task(
                     Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                     obs_col, a.retrieval, nn_rank, fixed_start=a.eval_start,
-                    geo_rank=geo_rank, ctx_start=cs)
-                tasks.append(t); metas.append((sites, sl))
+                    geo_rank=geo_rank, ctx_start=cs,
+                    latlon=ll if a.geo else None, self_da=a.self_da)
+                # the window the CONTEXT was drawn from -- equals sl in mode A
+                csl = sl if cs is None else slice(cs, cs + a.win)
+                tasks.append(t); metas.append((sites, sl, csl, t["_score"]))
             b = collate(tasks)
             with torch.no_grad():
                 rec = net(b)
-            for j, (sites, sl) in enumerate(metas):
-                y = Xp[sites[0], sl][..., obs_col, :].ravel()
-                ys.append(y)
-                ps.append(rec[j][..., obs_col, :].cpu().numpy().ravel())
+            for j, (sites, sl, csl, sc) in enumerate(metas):
+                # score ONLY the patches that were hidden from the query
+                ys.append(Xp[sites[0], sl][sc][..., obs_col, :].ravel())
+                ps.append(rec[j][sc][..., obs_col, :].cpu().numpy().ravel())
                 if K > 0:
-                    donor = Xp[sites[1], sl][..., obs_col, :].ravel()
-                    nn_ps.append(donor)
-                    cm_ps.append(Xp[sites[1:], sl][..., obs_col, :]
+                    # csl, NOT sl. In mode A these are the same window and
+                    # nothing changes; in mode B this is what stops the
+                    # baselines from reading the future.
+                    nn_ps.append(Xp[sites[1], csl][sc][..., obs_col, :].ravel())
+                    cm_ps.append(Xp[sites[1:], csl][:, sc][..., obs_col, :]
                                  .mean(0).ravel())
-        rec_row = {"K": K, "n": int(np.concatenate(ys).size),
-                   "model": r2(np.concatenate(ys), np.concatenate(ps))}
+        _y, _p = np.concatenate(ys), np.concatenate(ps)
+        # DAILY is the honest headline; the 16-day mean is reported too because
+        # aggregation raises R2 and any comparison must state which is which.
+        n_sc = ys[0].size // a.patch          # scored patches per basin
+        _ya = _y.reshape(-1, n_sc, a.patch).mean(-1)
+        _pa = _p.reshape(-1, n_sc, a.patch).mean(-1)
+        med, frac, nb = nse_per_site(ys, ps)
+        rec_row = {"K": K, "n": int(_y.size), "model": r2(_y, _p),
+                   "model_patch16": r2(_ya, _pa),
+                   "nse_median": med, "nse_frac_pos": frac, "n_basins": nb}
         if K > 0:
             rec_row["nn_donor"] = r2(np.concatenate(ys), np.concatenate(nn_ps))
             rec_row["ctx_mean"] = r2(np.concatenate(ys), np.concatenate(cm_ps))
+            rec_row["nn_donor_nse"] = nse_per_site(ys, nn_ps)[0]
+            rec_row["ctx_mean_nse"] = nse_per_site(ys, cm_ps)[0]
         rows.append(rec_row)
-        print(f"  K={K:3d}  model {rec_row['model']:+.4f}"
+        print(f"  K={K:3d}  pooled-daily {rec_row['model']:+.4f}"
+              f"  16d {rec_row['model_patch16']:+.4f}"
+              f"  | per-basin NSE med {med:+.4f} ({frac:.0%} of {nb} > 0)"
               + (f"   nn_donor {rec_row['nn_donor']:+.4f}"
                  f"   ctx_mean {rec_row['ctx_mean']:+.4f}" if K > 0 else ""),
               flush=True)
@@ -361,6 +448,20 @@ if __name__ == "__main__":
                     help="training windows must start before this DAY. "
                          "Without it there is no temporal split and period "
                          "memorisation is uncontrolled -- see Diagnosis.md")
+    ap.add_argument("--self-da", type=int, default=0, metavar="P",
+                    help="SELF-ASSIMILATION: query keeps its own discharge "
+                         "except the last P patches, which are predicted and "
+                         "scored. Comparable in information set to Jamaat "
+                         "2025 / Yang 2026. 0 = ungauged (default).")
+    ap.add_argument("--no-pooled", action="store_true",
+                    help="skip the pooled-summary path WITHOUT time masking "
+                         "-- the control that isolates --causal")
+    ap.add_argument("--geo", action="store_true",
+                    help="connector encodes displacement from the query")
+    ap.add_argument("--causal", action="store_true",
+                    help="forbid attending to the future -- makes the model a "
+                         "FILTER rather than a smoother, comparable to the "
+                         "causal LSTM baseline")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="pub")
     main(ap.parse_args())
