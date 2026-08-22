@@ -187,6 +187,23 @@ there and is strongly negative on real CAMELS.
 
 ## Result 4 — prediction in ungauged basins, from context alone
 
+**Temporal split, three arms, all trained on 1980–2004 and evaluated in April
+2006 with a 608-day gap:**
+
+| arm | R² |
+|---|---|
+| regional LSTM **with the test gauges in training** (the ceiling) | **0.8606** |
+| **ours — never sees the query gauge** | **0.8447** |
+| regional LSTM without the test gauges (standard PUB) | 0.7553 |
+
+> **Conditioning on nearby gauges recovers 85% of the value of actually having
+> the gauge** (0.0894 of a 0.1053 gap), for a basin never gauged, in a region
+> never trained on, in a period never trained on.
+
+We land *below* the ceiling, as physics requires. The temporal split costs us
+0.008 and the LSTM control 0.007 — so the result is **not** period
+memorisation.
+
 The load-bearing claim. A query basin in a **region the model never trained
 on**, with **every streamflow observation hidden**, predicted by conditioning
 on K nearby gauged basins at inference — no retraining.

@@ -16,7 +16,33 @@ before quoting any of them.
 
 ---
 
-## THE MISSING CONTROL — there is no temporal split
+## RESOLVED 2026-08-22 — the temporal test was run, and it holds
+
+> Train 1980–2004 (windows end day 9000), evaluate April 2006 (day 9600),
+> **608-day gap**, all three arms on the identical training period.
+>
+> | arm | R² |
+> |---|---|
+> | LSTM **(a) CEILING** — test gauges INCLUDED in training | **0.8606** |
+> | **ours** — never sees the query gauge at all | **0.8447** |
+> | LSTM **(b) PUB** — test gauges excluded | 0.7553 |
+>
+> **Not period memorisation.** The split costs us 0.008 at the peak (0.8528 →
+> 0.8447) and costs the LSTM control 0.007 (0.7625 → 0.7553) — the split is not
+> intrinsically harder, and both models pay the same small price.
+>
+> **No ceiling violation.** We land 0.016 BELOW the gauged ceiling, which is
+> what physics says should happen.
+>
+> **The interpretable statement.** The gap between not having a gauge (0.7553)
+> and having it (0.8606) is 0.1053. Context recovers 0.0894 of it — **85%**.
+> For a basin never gauged, real-time neighbours buy 85% of what installing a
+> gauge and calibrating on its record would buy.
+
+The original description of the gap is kept below, because it is what the
+earlier numbers rested on.
+
+## THE MISSING CONTROL (as it stood before 2026-08-22) — no temporal split
 
 **Training samples windows uniformly from the entire 1980–2014 record.
 Evaluation sits at patches 200–232 = days 3200–3712 = 1988-10-05 to
