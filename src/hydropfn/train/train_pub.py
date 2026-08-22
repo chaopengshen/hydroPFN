@@ -148,7 +148,8 @@ def main(a):
 
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                       d_ffd=a.d_ffd, k_summary=a.k_summary)
-    net = PUBModel(enc, depth=a.conn_depth).to(DEVICE)
+    net = PUBModel(enc, depth=a.conn_depth,
+                   time_aligned=a.time_aligned).to(DEVICE)
     print(f"  PUBModel {sum(p.numel() for p in net.parameters())/1e6:.1f}M "
           f"params | context sizes sampled from {a.k_train}", flush=True)
 
@@ -251,6 +252,9 @@ if __name__ == "__main__":
     ap.add_argument("--k-eval", default="0,1,2,4,8,16,32")
     ap.add_argument("--retrieval", choices=["similar", "random", "geo"],
                     default="similar")
+    ap.add_argument("--time-aligned", action="store_true",
+                    help="let each query patch attend to context patches at "
+                         "the SAME time position, not just pooled summaries")
     ap.add_argument("--context-pool", choices=["train", "all"], default="train",
                     help="'all' lets a held-out query use OTHER basins in its "
                          "own region as context -- not leakage, since the "

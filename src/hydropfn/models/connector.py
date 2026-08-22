@@ -70,13 +70,31 @@ class PUBModel(nn.Module):
     CONDITIONING VECTOR, not a reconstruction.
     """
 
-    def __init__(self, encoder, d: int = 256, depth: int = 4, heads: int = 8):
+    def __init__(self, encoder, d: int = 256, depth: int = 4, heads: int = 8,
+                 time_aligned: bool = False):
+        """`time_aligned` adds a second cross-attention in which each query
+        PATCH attends to the context patches at the SAME time position.
+
+        Why it exists. The connector sees only time-POOLED summaries -- the
+        scaling guardrail. That is right for transferring basin character and
+        wrong for transferring today's weather: a neighbour's flow at patch n
+        predicts the query's flow at patch n, and no summary pooled over the
+        whole window can carry that. Measured: with nearby context, averaging
+        the neighbours' hydrographs scores 0.829 while the summary-only model
+        scores 0.556. The information is present and the architecture cannot
+        reach it.
+        """
         super().__init__()
         self.encoder = encoder
+        self.time_aligned = time_aligned
         self.connector = CrossSiteConnector(d, depth, heads)
         self.cross = nn.MultiheadAttention(d, heads, batch_first=True)
         self.norm_q = nn.LayerNorm(d)
         self.norm_c = nn.LayerNorm(d)
+        if time_aligned:
+            self.tcross = nn.MultiheadAttention(d, heads, batch_first=True)
+            self.norm_tq = nn.LayerNorm(d)
+            self.norm_tc = nn.LayerNorm(d)
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, encoder.patch))
 
@@ -103,4 +121,15 @@ class PUBModel(nn.Module):
                           need_weights=False)
         z = hq + a
         N, V = batch["series"].shape[2], batch["series"].shape[3]
+
+        if self.time_aligned and S > 1:
+            # Each query patch attends to the CONTEXT patches at the same time
+            # position -- (B*N) independent attentions with (S-1)*V keys each.
+            h = out["h_series"].reshape(B, S, N, V, d)
+            qs = h[:, 0].reshape(B * N, V, d)
+            ks = h[:, 1:].permute(0, 2, 1, 3, 4).reshape(B * N, (S - 1) * V, d)
+            ta, _ = self.tcross(self.norm_tq(qs), self.norm_tc(ks),
+                                self.norm_tc(ks), need_weights=False)
+            z = z + ta.reshape(B, N, V, d).reshape(B, N * V, d)
+
         return self.head(z).reshape(B, N, V, self.encoder.patch)
