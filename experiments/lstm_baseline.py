@@ -1,0 +1,160 @@
+"""Regional LSTM baseline — the U3 gate from docs/architecture.md.
+
+Reproduces: logs/lstm_baseline_{tag}.csv
+
+The PUB model beats `ctx_mean` and `nn_donor`, which are the right PUB
+baselines. But `docs/architecture.md` specifies the gate as "must beat a
+regional LSTM on the same basins under leave-region-out", and an LSTM is what
+the hydrology literature will ask about. Without it, our numbers float free of
+the field's reference point.
+
+This is the standard CAMELS setup (Kratzert-style): one LSTM trained across all
+training basins, forcings plus static attributes at every timestep, predicting
+streamflow. It has NO access to context basins — that is precisely the point.
+The comparison it licenses:
+
+    LSTM            vs   our K=0     does the per-site pathway hold its own
+                                     against the field's workhorse?
+    LSTM            vs   our K>0     does conditioning on nearby gauges beat
+                                     the workhorse -- the claim that matters
+
+Evaluation is deliberately made COMPARABLE to the PUB runs rather than
+maximally flattering to the LSTM: the same held-out basins, the same window,
+the same log1p target, and predictions aggregated to the same 16-day patches
+before scoring. Reporting daily NSE here and patch R² there would compare two
+different quantities.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from hydropfn.data.forcing import load_camels  # noqa: E402
+from hydropfn.paths import LOGS  # noqa: E402
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+class RegionalLSTM(nn.Module):
+    """Forcings + broadcast statics -> streamflow, one model for all basins."""
+
+    def __init__(self, n_forcing: int, n_attr: int, hidden: int = 256,
+                 layers: int = 1, dropout: float = 0.4):
+        super().__init__()
+        self.lstm = nn.LSTM(n_forcing + n_attr, hidden, layers,
+                            batch_first=True,
+                            dropout=dropout if layers > 1 else 0.0)
+        self.drop = nn.Dropout(dropout)
+        self.head = nn.Linear(hidden, 1)
+
+    def forward(self, x, a):
+        a = a[:, None, :].expand(-1, x.shape[1], -1)
+        h, _ = self.lstm(torch.cat([x, a], dim=-1))
+        return self.head(self.drop(h)).squeeze(-1)
+
+
+def main(a):
+    torch.manual_seed(a.seed)
+    rng = np.random.default_rng(a.seed)
+    d = load_camels(a.nc)
+    X, A_, region = d["x"], d["attrs"], d["region"]
+
+    hold = a.holdout.split(",")
+    te = np.flatnonzero(np.isin(region, hold))
+    tr = np.flatnonzero(~np.isin(region, hold))
+    print(f"leave-region-out {hold}: {len(te)} held out / {len(tr)} train "
+          f"| {DEVICE}", flush=True)
+
+    mu, sd = X[tr].mean((0, 1)), X[tr].std((0, 1)) + 1e-6
+    Xs = ((X - mu) / sd).astype(np.float32)
+    am, asd = A_[tr].mean(0), A_[tr].std(0) + 1e-6
+    As = np.nan_to_num((A_ - am) / asd).astype(np.float32)
+    obs = Xs.shape[-1] - 1
+    forc = np.delete(Xs, obs, axis=-1)
+    q = Xs[..., obs]
+
+    T = X.shape[1]
+    seq = a.patch * a.win                      # same span as the PUB window
+    net = RegionalLSTM(forc.shape[-1], As.shape[1], a.hidden,
+                       a.layers).to(DEVICE)
+    print(f"  RegionalLSTM {sum(p.numel() for p in net.parameters())/1e6:.2f}M "
+          f"params, seq {seq} d, warmup {a.warmup} d", flush=True)
+    opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-5)
+    sched = torch.optim.lr_scheduler.OneCycleLR(
+        opt, max_lr=a.lr, total_steps=a.epochs * a.steps, pct_start=0.1)
+
+    t0 = time.time()
+    for ep in range(a.epochs):
+        net.train(); tot = 0.0
+        for _ in range(a.steps):
+            b = rng.choice(tr, size=a.batch, replace=False)
+            s = rng.integers(0, T - seq)
+            x = torch.tensor(forc[b, s:s + seq], device=DEVICE)
+            y = torch.tensor(q[b, s:s + seq], device=DEVICE)
+            aa = torch.tensor(As[b], device=DEVICE)
+            p = net(x, aa)
+            # warmup steps are excluded: the hidden state has to fill first,
+            # and scoring them would flatter the baseline's competitors
+            loss = ((p[:, a.warmup:] - y[:, a.warmup:]) ** 2).mean()
+            opt.zero_grad(); loss.backward()
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+            opt.step(); sched.step()
+            tot += loss.item()
+        if (ep + 1) % 10 == 0 or ep == 0:
+            print(f"  epoch {ep+1}/{a.epochs}  MSE {tot/a.steps:.4f}  "
+                  f"[{(time.time()-t0)/60:.1f} min]", flush=True)
+
+    # ---- evaluate on the SAME window the PUB runs use, aggregated to patches
+    net.eval()
+    s0 = a.eval_start * a.patch
+    ys, ps = [], []
+    with torch.no_grad():
+        for i in range(0, len(te), 64):
+            b = te[i:i + 64]
+            x = torch.tensor(forc[b, s0:s0 + seq], device=DEVICE)
+            y = q[b, s0:s0 + seq]
+            aa = torch.tensor(As[b], device=DEVICE)
+            p = net(x, aa).cpu().numpy()
+            # 16-day patch means, matching the PUB evaluation exactly
+            n = seq // a.patch
+            ys.append(y.reshape(len(b), n, a.patch).mean(-1))
+            ps.append(p.reshape(len(b), n, a.patch).mean(-1))
+    y = np.concatenate(ys).ravel(); p = np.concatenate(ps).ravel()
+    r2 = float(1 - ((y - p) ** 2).sum() / ((y - y.mean()) ** 2).sum())
+    print(f"\n=== regional LSTM, held-out basins, 16-day patches ===")
+    print(f"  R2 = {r2:+.4f}   (n = {y.size:,})")
+    print("\n  compare to the PUB runs on the same holdout:")
+    print("    our K=0 (no context)   ~0.46      per-site pathway only")
+    print("    our K=4 (with context) ~0.85      the claim")
+    pd.DataFrame([{"holdout": a.holdout, "seed": a.seed, "r2_patch": r2,
+                   "n": int(y.size)}]).to_csv(
+        LOGS / f"lstm_baseline_{a.tag}.csv", index=False)
+    print(f"\nwrote {LOGS / f'lstm_baseline_{a.tag}.csv'}")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--nc", required=True)
+    ap.add_argument("--holdout", default="01,11,17")
+    ap.add_argument("--patch", type=int, default=16)
+    ap.add_argument("--win", type=int, default=32)
+    ap.add_argument("--warmup", type=int, default=120)
+    ap.add_argument("--hidden", type=int, default=256)
+    ap.add_argument("--layers", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--steps", type=int, default=150)
+    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--eval-start", type=int, default=200)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--tag", default="lstm")
+    main(ap.parse_args())

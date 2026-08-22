@@ -213,6 +213,13 @@ Two findings behind it, both the product of being wrong first:
   with nothing else changed. The connector's time-pooled tokens are right for
   transferring basin character and wrong for transferring today's weather.
 
+**Versus a regional LSTM** (the field's workhorse, same basins, same 16-day
+patch scoring): we win with context — 0.853 vs 0.750 and 0.728 vs 0.707 — but
+our K=0 pathway *loses badly* (0.36–0.47 vs 0.71–0.75). The entire advantage
+comes from context, so the honest claim is "conditioning on nearby gauges is
+worth more than the modelling gap it overcomes", not "the architecture is
+better". We also use 24× the LSTM's parameters. See `docs/pub_test_plan.md`.
+
 **Replicated** over 3 seeds (peak spread 0.008) and a second region set: gain
 +0.368 to +0.401, beating donor-averaging in 4/4 runs at every K. The second
 region set is harder in absolute terms (peak 0.728) yet the gain is identical

@@ -298,3 +298,56 @@ Two details:
   0.785 → 0.610 between region sets while the model falls 0.853 → 0.728.
 
 4/4 runs beat both baselines at every K.
+
+
+---
+
+## U3 GATE — versus a regional LSTM
+
+`experiments/lstm_baseline.py`: standard Kratzert-style setup, one LSTM across
+all training basins, forcings + broadcast statics at every timestep, 120-day
+warmup excluded, predictions aggregated to the SAME 16-day patches and scored
+the same way as the PUB runs. Comparing daily NSE against patch R² would
+compare two different quantities.
+
+| holdout | regional LSTM | our K=0 | our peak | peak − LSTM |
+|---|---|---|---|---|
+| `01,11,17` | 0.7498 | 0.455–0.471 | 0.853–0.861 | **+0.103 to +0.111** |
+| `02,07,10` | 0.7074 | 0.3601 | 0.7278 | **+0.021** |
+
+**GATE PASSES — with context, on both region sets.** But read the middle column.
+
+### The uncomfortable finding
+
+**Our per-site pathway is much worse than a standard LSTM: 0.36–0.47 against
+0.71–0.75.** A gap of 0.29–0.35. Our encoder is a weaker hydrological model
+than the field's workhorse, and the ENTIRE advantage comes from context.
+
+The defensible claim is therefore narrower than "our architecture is better".
+It is: **conditioning on nearby gauges is worth more than the modelling gap it
+has to overcome.** That is still a real and useful claim — an LSTM structurally
+cannot use neighbouring gauges at inference — but it is not the claim a casual
+reading of the headline number would suggest.
+
+### Caveats that cut against us
+
+- **7.1M parameters versus the LSTM's 0.30M** — 24x the parameters for +0.02 to
+  +0.11. Not a flattering efficiency comparison.
+- **Our model is trained on masked reconstruction across four mask types**, not
+  solely on streamflow. It is doing more and paying for it in single-task
+  accuracy. That is the most plausible explanation for the per-site gap, and it
+  is testable: train a streamflow-only variant and see whether K=0 closes on
+  the LSTM.
+- The margin is **+0.021** on one holdout. One seed for each LSTM.
+
+### The diagnostic that should come next
+
+Train unit A with `whole_site` masking only (no gap-filling, forecasting or
+cross-variable objectives) and re-measure K=0 against the LSTM. Two outcomes:
+
+- **K=0 closes on the LSTM** → the per-site gap is the price of multi-task
+  pretraining, and the architecture is sound. The right response is a
+  fine-tuning stage, not a redesign.
+- **K=0 still loses** → the patch-token encoder is genuinely worse at
+  rainfall-runoff than a daily-recurrent LSTM, and the temporal representation
+  needs rethinking regardless of how well context works.
