@@ -50,7 +50,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
-               geo_rank=None, start_lo=0, start_hi=None):
+               geo_rank=None, start_lo=0, start_hi=None,
+               ctx_start=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -78,13 +79,34 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
 
     sites = np.concatenate([[q_idx], ctx]).astype(int)
     S = len(sites)
-    ser = Xp[sites][:, sl]                                   # (S, win, V, p)
-    val = valid_p[sites][:, sl]
+
+    # TWO CONTEXT MODES, and they answer different questions.
+    #
+    #   ctx_start None  -- context shares the query's window. The neighbours'
+    #                      CURRENT discharge is visible. This is data
+    #                      assimilation on an ungauged basin.
+    #   ctx_start set   -- context comes from an earlier (training) period.
+    #                      Only the neighbours' LONG-TERM behaviour is visible,
+    #                      never today's. This is regionalisation, and the
+    #                      time-aligned attention is meaningless here by
+    #                      construction, since patch n of the query and patch n
+    #                      of the context are different weeks.
+    if ctx_start is None:
+        ser = Xp[sites][:, sl]
+        val = valid_p[sites][:, sl]
+        dd = np.tile(doy[sl], (S, 1))
+    else:
+        csl = slice(ctx_start, ctx_start + win)
+        ser = np.concatenate([Xp[sites[:1]][:, sl], Xp[sites[1:]][:, csl]], 0)
+        val = np.concatenate([valid_p[sites[:1]][:, sl],
+                              valid_p[sites[1:]][:, csl]], 0)
+        dd = np.concatenate([np.tile(doy[sl], (1, 1)),
+                             np.tile(doy[csl], (S - 1, 1))], 0)
+
     vis = np.ones((S, win, V), np.float32)
     vis[0, :, obs_col] = 0.0                                 # query ungauged
     return {"attrs": A[sites], "series": ser, "vis": vis, "valid": val,
-            "doy": np.tile(doy[sl], (S, 1)),
-            "site_valid": np.ones(S, np.float32)}, sites, sl
+            "doy": dd, "site_valid": np.ones(S, np.float32)}, sites, sl
 
 
 def collate(tasks):
@@ -137,6 +159,22 @@ def main(a):
     # their records are available at inference. What must never be visible is
     # the QUERY's own streamflow, and it never is.
     ll = d["latlon"]
+    # TWO geo rankings, and conflating them was a leak.
+    #
+    # TRAINING context must come from TRAINING basins only. Ranking over all
+    # basins let a training query pull a HELD-OUT basin in as context, so the
+    # model saw 70% of the eval basins' pre-cutoff streamflow (87 of 124, at
+    # 1.5-4.1% of context slots). Their eval-period data was never exposed, so
+    # the mode-A gain still comes from genuinely unseen information -- but any
+    # claim about HISTORICAL context was contaminated, because the history had
+    # already been absorbed into the weights.
+    #
+    # EVALUATION context may use whatever gauges exist, which is the
+    # operational situation.
+    gtrain = cKDTree(ll[tr])
+    _, gi = gtrain.query(ll, k=min(64, len(tr)))
+    geo_rank_train = tr[gi]
+
     pool_geo = np.arange(len(ll)) if a.context_pool == "all" else tr
     gtree = cKDTree(ll[pool_geo])
     _, g_idx = gtree.query(ll, k=min(64, len(pool_geo)))
@@ -174,6 +212,17 @@ def main(a):
               "whole record INCLUDING the evaluation window. Period "
               "memorisation is uncontrolled. See Diagnosis.md.", flush=True)
 
+    if a.eval_half:
+        # Score EXACTLY the basins the neighbour-trained LSTM scores, using the
+        # same rng and permutation. Comparing our 124-basin number against its
+        # 62-basin number would confound the question with which basins landed
+        # in the set -- and that subset is measurably harder (LSTM(b) gets
+        # 0.7074 there vs 0.7553 on all 124).
+        _rs = np.random.default_rng(0)
+        te = _rs.permutation(te)[len(te) // 2:]
+        print(f"  EVAL-HALF: scoring the same {len(te)} basins as the "
+              f"neighbour-trained LSTM arm", flush=True)
+
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                       d_ffd=a.d_ffd, k_summary=a.k_summary)
     net = PUBModel(enc, depth=a.conn_depth,
@@ -195,10 +244,13 @@ def main(a):
             for _ in range(a.batch):
                 q = int(rng.choice(tr))
                 pool = tr[tr != q]
+                cs = (int(rng.integers(0, max(1, (train_end_patch or
+                                                  Xp.shape[1] - a.win))))
+                      if a.context_period == "train" else None)
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
                                      a.win, obs_col, a.retrieval, nn_rank,
-                                     geo_rank=geo_rank,
-                                     start_hi=train_end_patch)
+                                     geo_rank=geo_rank_train,
+                                     start_hi=train_end_patch, ctx_start=cs)
                 tasks.append(t)
             b = collate(tasks)
             rec = net(b)
@@ -227,10 +279,12 @@ def main(a):
             chunk = te[i0:i0 + a.batch]
             tasks, metas = [], []
             for q in chunk:
+                cs = (a.context_train_start if a.context_period == "train"
+                      else None)
                 t, sites, sl = build_task(
                     Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                     obs_col, a.retrieval, nn_rank, fixed_start=a.eval_start,
-                    geo_rank=geo_rank)
+                    geo_rank=geo_rank, ctx_start=cs)
                 tasks.append(t); metas.append((sites, sl))
             b = collate(tasks)
             with torch.no_grad():
@@ -294,6 +348,15 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--eval-start", type=int, default=200,
                     help="evaluation window start, in PATCHES")
+    ap.add_argument("--eval-half", action="store_true",
+                    help="score the same half the neighbour-trained LSTM does")
+    ap.add_argument("--context-period", choices=["current", "train"],
+                    default="current",
+                    help="'current': context shares the query window -- data "
+                         "assimilation. 'train': context comes from the "
+                         "training period -- long-term conditioning only")
+    ap.add_argument("--context-train-start", type=int, default=100,
+                    help="patch index for context when --context-period train")
     ap.add_argument("--train-end", type=int, default=None,
                     help="training windows must start before this DAY. "
                          "Without it there is no temporal split and period "

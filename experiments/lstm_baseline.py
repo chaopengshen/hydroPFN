@@ -71,7 +71,38 @@ def main(a):
     hold = a.holdout.split(",")
     te = np.flatnonzero(np.isin(region, hold))
     tr = np.flatnonzero(~np.isin(region, hold))
-    if a.include_test_gauges:
+    if a.eval_half:
+        # Evaluate on EXACTLY the basins --train-on-neighbours evaluates on,
+        # without training on the other half. Same rng, same permutation, so
+        # the two arms differ ONLY in whether the neighbours were trained on.
+        # Comparing 62-basin and 124-basin scores would confound the question
+        # with which basins happened to be in the set.
+        rs = np.random.default_rng(0)
+        te = rs.permutation(te)[len(te) // 2:]
+        print(f"  EVAL-HALF: scoring the same {len(te)} basins as the "
+              f"neighbour-trained arm, but WITHOUT training on the others",
+              flush=True)
+    if a.train_on_neighbours:
+        # THE ARM THAT SEPARATES THE TWO ROUTES TO NEIGHBOUR INFORMATION.
+        # Split the held-out region in half: TRAIN on the training basins plus
+        # half of it, EVALUATE on the other half. Evaluation basins are still
+        # never trained on, but their geographic neighbours now ARE.
+        #
+        # This isolates what our in-context model does. Training on a
+        # neighbour gives you its climatology and response function, baked
+        # into weights. READING it at inference gives you its actual discharge
+        # this week. Weights cannot know it rained last Tuesday; context can.
+        # If this arm lands near LSTM(b), the advantage is real-time STATE.
+        # If it lands near our model, the advantage was just more training
+        # data and the in-context machinery is unnecessary.
+        rs = np.random.default_rng(0)
+        perm = rs.permutation(te)
+        half = len(te) // 2
+        nb_train, te = perm[:half], perm[half:]
+        tr = np.concatenate([tr, nb_train])
+        print(f"  NEIGHBOUR-TRAINED ARM: {len(nb_train)} held-out basins moved "
+              f"INTO training; evaluating on the other {len(te)}", flush=True)
+    elif a.include_test_gauges:
         # THE GAUGED CEILING. This LSTM trains on the test basins too, so it
         # answers "how well can this gauge be predicted if you HAVE its
         # record". Our PUB model must be read against it: beating it is not
@@ -173,6 +204,12 @@ if __name__ == "__main__":
                     help="evaluation window start, in PATCHES")
     ap.add_argument("--train-end", type=int, default=None,
                     help="training windows must end by this DAY")
+    ap.add_argument("--eval-half", action="store_true",
+                    help="score the same half the neighbour-trained arm "
+                         "scores, without training on the other half")
+    ap.add_argument("--train-on-neighbours", action="store_true",
+                    help="train on half the held-out region, evaluate on the "
+                         "other half -- neighbours trained-on, query not")
     ap.add_argument("--include-test-gauges", action="store_true",
                     help="train on the held-out basins too -- the GAUGED "
                          "CEILING arm")
