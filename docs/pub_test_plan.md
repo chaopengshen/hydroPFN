@@ -1,11 +1,18 @@
 # Does context actually let us predict an ungauged site?
 
-> **RESULT 2026-08-21: NO — for a fully ungauged basin, context adds exactly
-> nothing.** Both retrieval arms are flat (gain +0.0000); with similar
-> retrieval context actively hurts at small K. The pre-registered meaning of a
-> flat curve applies: the cross-site premise does not hold for this task, and
-> it is recorded here as loudly as a positive would have been. Details at the
-> bottom of this file.
+> **RESULT 2026-08-21, then CORRECTED the same day.** The first run found
+> context worth exactly +0.0000 — but that test was MIS-SPECIFIED. It drew
+> context from training regions only, which under leave-region-out forces
+> context basins to be geographically distant. Measured: the nearest available
+> context basin was a median **1.73°** away, while the nearest real gauge is
+> **0.29°**. So it asked "can basins ~190 km away help?" and answered no —
+> which is neither the interesting question nor the real PUB setting.
+>
+> Nearby gauged basins share STORMS with the query. With geographic retrieval
+> from the full pool, the trivial baselines jump from `ctx_mean` 0.312 to
+> **0.829** — the information was always there and the protocol excluded it.
+> The corrected test is running; the flat result below stands only for
+> *distant* context.
 
 This is the load-bearing claim of the whole design. Everything else — the DEM
 sampler, the merged site encoder, the StefaLand reuse — is scaffolding around
@@ -106,7 +113,7 @@ real.
 
 ---
 
-## RESULT — T-B and T-C fail, T-E is moot
+## RESULT (superseded) — DISTANT context adds nothing
 
 40 epochs, leave-region-out (`01,11,17`), 124 held-out query basins, identical
 query basins and evaluation window across every arm and every K.
@@ -122,7 +129,10 @@ query basins and evaluation window across every arm and every K.
 | 32 | 0.5584 | 0.4333 | 0.1517 | 0.6215 |
 | **gain** | **+0.0000** | | | **+0.0000** |
 
-- **T-B FAIL.** Context never beats K=0 in either arm.
+> **Read this section as: distant context adds nothing.** It does not settle
+> the claim, because both arms here drew context from training regions only.
+
+- **T-B FAIL for distant context.** Never beats K=0 in either arm.
 - **T-C FAIL.** Not a rising curve, not even the "one donor" step. Flat.
 - **T-E moot.** With no context effect to compare, similar-vs-random cannot
   discriminate. It did reveal something else though (below).
@@ -159,6 +169,31 @@ ratings and few-shot site updating). Unit D's +0.127 and its rising curve stand.
 Kills, as currently framed: **PUB by neighbouring gauged basins** (use case 5).
 For zero-gauge prediction, forcings + attributes + a trained model is the whole
 story, and the connector is dead weight that also costs per-site accuracy.
+
+### The flaw, found by asking "won't it need to be a NEIGHBOUR?"
+
+Under leave-region-out, drawing context from training regions guarantees the
+context is in a *different drainage region* from the query. Median distance to
+the nearest context basin was 1.73° versus 0.29° to the nearest real gauge.
+Attribute-similar basins on the far side of the continent see different weather
+on the same day; a basin 32 km away sees the same storm.
+
+The fix is `--retrieval geo --context-pool all`: geographic neighbours, drawn
+from every basin except the query itself. **This is not leakage.** The model
+still never trained on the held-out region; those neighbouring gauges exist in
+reality and their records are available at inference; and the query's own
+streamflow is never visible in any arm. It is exactly the operational PUB
+setting — a region with some gauges and one ungauged catchment among them.
+
+How strong the signal is, from the untrained smoke run at K=4:
+
+| retrieval / pool | `nn_donor` | `ctx_mean` |
+|---|---|---|
+| attribute-similar, training pool (original) | 0.152 | 0.312 |
+| **geographic, full pool (corrected)** | **0.785** | **0.829** |
+
+`ctx_mean` at 0.829 is now a formidable baseline — averaging a few nearby
+gauged hydrographs. The model has to beat THAT, not 0.31.
 
 ### The follow-up worth running
 

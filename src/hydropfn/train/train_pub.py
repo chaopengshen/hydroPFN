@@ -49,7 +49,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
-               retrieval="similar", nn_rank=None, fixed_start=None):
+               retrieval="similar", nn_rank=None, fixed_start=None,
+               geo_rank=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -62,9 +63,16 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
 
     if K == 0:
         ctx = np.array([], dtype=int)
+    elif retrieval == "geo" and geo_rank is not None:
+        # GEOGRAPHIC neighbours. This is the only retrieval that can supply
+        # information the attributes cannot: a nearby gauged basin shares
+        # STORMS with the query. Attribute-similar basins on the far side of
+        # the continent see different weather on the same day, which is why
+        # the first version of this test measured exactly zero.
+        ctx = np.array([c for c in geo_rank[q_idx] if c != q_idx][:K])
     elif retrieval == "similar" and nn_rank is not None:
         ctx = nn_rank[q_idx][:K]
-    else:                                   # random (and geo, ranked outside)
+    else:
         ctx = rng.choice(ctx_pool, size=min(K, len(ctx_pool)), replace=False)
 
     sites = np.concatenate([[q_idx], ctx]).astype(int)
@@ -122,6 +130,22 @@ def main(a):
     _, nn_idx = tree.query(A_s, k=min(64, len(tr)))
     nn_rank = tr[nn_idx]                                     # (S_all, 64)
 
+    # Geographic ranking. `--context-pool all` lets a held-out query draw on
+    # OTHER basins in its own region. That is not leakage: the model never
+    # trained on them, and in the real PUB setting those gauges exist and
+    # their records are available at inference. What must never be visible is
+    # the QUERY's own streamflow, and it never is.
+    ll = d["latlon"]
+    pool_geo = np.arange(len(ll)) if a.context_pool == "all" else tr
+    gtree = cKDTree(ll[pool_geo])
+    _, g_idx = gtree.query(ll, k=min(64, len(pool_geo)))
+    geo_rank = pool_geo[g_idx]
+    dist_tr = cKDTree(ll[tr]).query(ll[te], k=1)[0]
+    dist_all = gtree.query(ll[te], k=2)[0][:, 1]
+    print(f"  held-out query -> nearest TRAINING basin: median "
+          f"{np.median(dist_tr):.2f} deg; nearest ANY basin: median "
+          f"{np.median(dist_all):.2f} deg", flush=True)
+
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                       d_ffd=a.d_ffd, k_summary=a.k_summary)
     net = PUBModel(enc, depth=a.conn_depth).to(DEVICE)
@@ -143,7 +167,8 @@ def main(a):
                 q = int(rng.choice(tr))
                 pool = tr[tr != q]
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
-                                     a.win, obs_col, a.retrieval, nn_rank)
+                                     a.win, obs_col, a.retrieval, nn_rank,
+                                     geo_rank=geo_rank)
                 tasks.append(t)
             b = collate(tasks)
             rec = net(b)
@@ -174,7 +199,8 @@ def main(a):
             for q in chunk:
                 t, sites, sl = build_task(
                     Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
-                    obs_col, a.retrieval, nn_rank, fixed_start=a.eval_start)
+                    obs_col, a.retrieval, nn_rank, fixed_start=a.eval_start,
+                    geo_rank=geo_rank)
                 tasks.append(t); metas.append((sites, sl))
             b = collate(tasks)
             with torch.no_grad():
@@ -225,6 +251,10 @@ if __name__ == "__main__":
     ap.add_argument("--k-eval", default="0,1,2,4,8,16,32")
     ap.add_argument("--retrieval", choices=["similar", "random", "geo"],
                     default="similar")
+    ap.add_argument("--context-pool", choices=["train", "all"], default="train",
+                    help="'all' lets a held-out query use OTHER basins in its "
+                         "own region as context -- not leakage, since the "
+                         "model never trained on them and those gauges exist")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--batch", type=int, default=4)
