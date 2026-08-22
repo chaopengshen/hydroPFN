@@ -40,7 +40,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from hydropfn.data.forcing import load_camels, patchify, sample_mask
+from hydropfn.data.forcing import (MASK_KINDS, load_camels, patchify,
+                                   sample_mask)
 from hydropfn.models.connector import PUBModel
 from hydropfn.models.site_encoder import SiteEncoder
 from hydropfn.paths import LOGS
@@ -51,7 +52,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
-               ctx_start=None, latlon=None, self_da=0):
+               ctx_start=None, latlon=None, self_da=0, mask_kind=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -104,7 +105,21 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                              np.tile(doy[csl], (S - 1, 1))], 0)
 
     vis = np.ones((S, win, V), np.float32)
-    if self_da:
+    if mask_kind is not None:
+        # MIXTURE PRETRAINING. The query's mask is drawn from the four kinds
+        # instead of always being `whole_site`. This is the difference between
+        # a foundation model and a specialist: `whole_site` alone lets the
+        # time-aligned path copy a neighbour's concurrent flow, which is the
+        # shortest route to the answer, so nothing else ever has to learn
+        # anything -- measured, the whole pooled-summary path contributes
+        # 0.001. Under `whole_variable` or `random_span` that shortcut is
+        # unavailable and basin character has to come from somewhere.
+        #
+        # Note sample_mask may hide a FORCING, not just discharge (that is
+        # Yang et al. 2026's inverse-rainfall direction). The loss below is
+        # generalised over all variables so those masks actually train.
+        vis[0] = sample_mask(win, V, rng, kind=mask_kind, n_obs=1)
+    elif self_da:
         # SELF-ASSIMILATION MODE. The query keeps its OWN discharge history
         # and only the final `self_da` patches are hidden. This is the
         # information set of Jamaat et al. (2025) and Yang et al. (2026):
@@ -133,6 +148,7 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     # which query patches are actually being asked for -- eval scores ONLY
     # these, so self-DA is not credited for copying back its visible history
     task["_score"] = (vis[0, :, obs_col] == 0.0)
+    task["_kind"] = mask_kind or ("self_da" if self_da else "whole_site")
     if latlon is not None:
         # site 0 is the query; the connector encodes displacement FROM it
         task["latlon"] = latlon[sites].astype(np.float32)
@@ -293,6 +309,10 @@ def main(a):
     if a.no_pooled and not a.causal:
         print("  NO-POOLED: pooled summary path skipped, time NOT masked "
               "(control for --causal)", flush=True)
+    if a.mask_mix:
+        print(f"  MASK-MIX: query mask sampled from {MASK_KINDS}; loss over "
+              "ALL hidden variables. Eval remains the fixed PUB task.",
+              flush=True)
     if a.causal:
         print("  CAUSAL: site encoder time-masked; pooled summary path "
               "SKIPPED (summaries pool over the whole window). Only the "
@@ -320,7 +340,9 @@ def main(a):
                                      geo_rank=geo_rank_train,
                                      start_hi=train_end_patch, ctx_start=cs,
                                      latlon=ll if a.geo else None,
-                                     self_da=a.self_da)
+                                     self_da=a.self_da,
+                                     mask_kind=(str(rng.choice(MASK_KINDS))
+                                                if a.mask_mix else None))
                 tasks.append(t)
             b = collate(tasks)
             rec = net(b)
@@ -342,37 +364,60 @@ def main(a):
     # ---------------- evaluation: the context-scaling curve + baselines
     net.eval()
     rows = []
+    # ROLLING ORIGIN. With --self-da only the final patch of each window is
+    # scored, so a single origin gives each basin 16 days -- and a per-basin
+    # NSE over 16 days has almost no variance in its denominator, which is why
+    # the first self-DA run reported median NSE -4.23 while pooled R2 read
+    # 0.38. That was the metric collapsing, not the model failing. Jamaat et
+    # al. score NSE over a multi-year test series, so we slide the origin one
+    # patch at a time and concatenate each basin's predicted tails into a
+    # contiguous series before scoring. --roll 1 reproduces the old behaviour.
+    starts = [a.eval_start + r for r in range(a.roll)]
+    if a.roll > 1:
+        print(f"  ROLLING: {a.roll} origins from patch {starts[0]} to "
+              f"{starts[-1]}; each basin's scored tails are concatenated "
+              f"into one series before NSE", flush=True)
     for K in [int(x) for x in a.k_eval.split(",")]:
         erng = np.random.default_rng(123)
-        ys, ps, nn_ps, cm_ps = [], [], [], []
-        for i0 in range(0, len(te), a.batch):
-            chunk = te[i0:i0 + a.batch]
-            tasks, metas = [], []
-            for q in chunk:
-                cs = (a.context_train_start if a.context_period == "train"
-                      else None)
-                t, sites, sl = build_task(
-                    Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
-                    obs_col, a.retrieval, nn_rank, fixed_start=a.eval_start,
-                    geo_rank=geo_rank, ctx_start=cs,
-                    latlon=ll if a.geo else None, self_da=a.self_da)
-                # the window the CONTEXT was drawn from -- equals sl in mode A
-                csl = sl if cs is None else slice(cs, cs + a.win)
-                tasks.append(t); metas.append((sites, sl, csl, t["_score"]))
-            b = collate(tasks)
-            with torch.no_grad():
-                rec = net(b)
-            for j, (sites, sl, csl, sc) in enumerate(metas):
-                # score ONLY the patches that were hidden from the query
-                ys.append(Xp[sites[0], sl][sc][..., obs_col, :].ravel())
-                ps.append(rec[j][sc][..., obs_col, :].cpu().numpy().ravel())
-                if K > 0:
-                    # csl, NOT sl. In mode A these are the same window and
-                    # nothing changes; in mode B this is what stops the
-                    # baselines from reading the future.
-                    nn_ps.append(Xp[sites[1], csl][sc][..., obs_col, :].ravel())
-                    cm_ps.append(Xp[sites[1:], csl][:, sc][..., obs_col, :]
-                                 .mean(0).ravel())
+        # per-basin accumulators, so rolling origins concatenate IN ORDER
+        acc = {int(q): {"y": [], "p": [], "nn": [], "cm": []} for q in te}
+        for st in starts:
+            for i0 in range(0, len(te), a.batch):
+                chunk = te[i0:i0 + a.batch]
+                tasks, metas = [], []
+                for q in chunk:
+                    cs = (a.context_train_start if a.context_period == "train"
+                          else None)
+                    t, sites, sl = build_task(
+                        Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
+                        obs_col, a.retrieval, nn_rank, fixed_start=st,
+                        geo_rank=geo_rank, ctx_start=cs,
+                        latlon=ll if a.geo else None, self_da=a.self_da)
+                    csl = sl if cs is None else slice(cs, cs + a.win)
+                    tasks.append(t)
+                    metas.append((int(q), sites, sl, csl, t["_score"]))
+                b = collate(tasks)
+                with torch.no_grad():
+                    rec = net(b)
+                for j, (q, sites, sl, csl, sc) in enumerate(metas):
+                    d = acc[q]
+                    # score ONLY the patches that were hidden from the query
+                    d["y"].append(Xp[sites[0], sl][sc][..., obs_col, :].ravel())
+                    d["p"].append(
+                        rec[j][sc][..., obs_col, :].cpu().numpy().ravel())
+                    if K > 0:
+                        # csl, NOT sl. In mode A these are the same window and
+                        # nothing changes; in mode B this is what stops the
+                        # baselines from reading the future.
+                        d["nn"].append(
+                            Xp[sites[1], csl][sc][..., obs_col, :].ravel())
+                        d["cm"].append(Xp[sites[1:], csl][:, sc][..., obs_col, :]
+                                       .mean(0).ravel())
+        order = [int(q) for q in te]
+        ys = [np.concatenate(acc[q]["y"]) for q in order]
+        ps = [np.concatenate(acc[q]["p"]) for q in order]
+        nn_ps = [np.concatenate(acc[q]["nn"]) for q in order] if K > 0 else []
+        cm_ps = [np.concatenate(acc[q]["cm"]) for q in order] if K > 0 else []
         _y, _p = np.concatenate(ys), np.concatenate(ps)
         # DAILY is the honest headline; the 16-day mean is reported too because
         # aggregation raises R2 and any comparison must state which is which.
@@ -448,6 +493,17 @@ if __name__ == "__main__":
                     help="training windows must start before this DAY. "
                          "Without it there is no temporal split and period "
                          "memorisation is uncontrolled -- see Diagnosis.md")
+    ap.add_argument("--roll", type=int, default=1, metavar="N",
+                    help="rolling-origin evaluation: N window starts, one "
+                         "patch apart, concatenated per basin before scoring. "
+                         "Needed for --self-da, where one origin scores only "
+                         "16 days per basin and NSE degenerates.")
+    ap.add_argument("--mask-mix", action="store_true",
+                    help="MIXTURE PRETRAINING: sample the query's mask from "
+                         "all four kinds (random_span, causal_tail, "
+                         "whole_variable, whole_site) instead of always "
+                         "whole_site. Evaluation stays the fixed PUB task, so "
+                         "PUB becomes one downstream conditional.")
     ap.add_argument("--self-da", type=int, default=0, metavar="P",
                     help="SELF-ASSIMILATION: query keeps its own discharge "
                          "except the last P patches, which are predicted and "
