@@ -1,46 +1,106 @@
-"""TEMPLATE — level 2: the cross-site transformer.
+"""Level 2 — the cross-site connector, and the PUB model built on it.
 
-NOT IMPLEMENTED as a general connector. A working single-modality version
-exists in `models/measurement_pfn.py` (`HydroPFN`) — that is what produced the
-measured cross-variable and at-a-station results. This is its generalisation to
-the full multimodal token bundle.
+This is the load-bearing claim of the whole design: **given K gauged context
+basins, can we predict streamflow at an UNGAUGED basin better than without
+them?** See `docs/pub_test_plan.md` for the ladder and the pre-registered
+failure modes.
 
-    IN    (B, 1 + S*K, 256)   sites flattened, [TASK] prepended, geo-encoding
-                              added, padding mask (B, 1 + S*K)
-    OUT   (B, 1 + S*K, 256)   read position 0 for a scalar query; read the
-                              per-site positions to condition level-3 decoders
+Note what is NOT yet shown when this file is written. Context has been shown to
+help for POINT MEASUREMENTS (unit D, +0.127 R² cross-variable, 9/9 across
+regions and seeds) — but that context is the query site's OWN history, a much
+easier setting. For time series, unit A has no cross-site attention at all, and
+its R² 0.769 comes from forcings and attributes at a single site.
 
-`B` indexes TASKS, `S` indexes sites within a task. **They cannot collapse**:
+`B` indexes TASKS and `S` indexes sites within a task. They cannot collapse:
 attention must stay inside a task, or a site from task 1 attends to a site from
-task 2. The per-site encoders have no cross-site interaction, so they run on
-the flattened `(B*S)`.
-
-Permutation-invariant over sites — no positional index. Query attends to
-context; context never attends to query.
-
-MEASURED LIMITATION to fix here. With a FIXED context size during training, the
-model calibrates off one neighbour and never learns to aggregate. The
-context-scaling curve (`figs/fig_context_scaling.png`) shows own-site visits
-producing a graded rise (velocity R² 0.575 -> 0.906 over 0 -> 8 visits) while
-neighbour sites produce a STEP (-0.145 -> 0.582 on the first neighbour, then
-flat out to 16). **Randomise the context size during training.**
-
-`K` is the per-site information bottleneck: `K * 256` numbers is everything a
-site can say to the connector — for a site with 40 years of daily data across
-10 variables (~146,000 numbers), `K = 4` is ~140x compression. That is
-survivable only because the summary need not carry detail: the level-3 decoder
-has the site's own unmasked data locally, so the summary carries what OTHER
-sites contribute, which is genuinely low-dimensional (basin similarity,
-regional wetness, calibration offset). Pick `K` empirically — sweep it and find
-where downstream performance saturates.
+task 2. The per-site encoder has no cross-site interaction, so it runs on the
+flattened `(B*S)`; only this module needs the `(B, S)` structure.
 """
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 
 
 class CrossSiteConnector(nn.Module):
-    def __init__(self, d: int = 256, depth: int = 8, heads: int = 8):
+    """Attention over site-SUMMARY tokens.
+
+    IN   (B, S, K, d)   site 0 is the query; sites 1.. are context
+    OUT  (B, S, K, d)   summaries now carry cross-site information
+
+    Permutation-invariant over sites: there is no positional index across the
+    site axis, only a role embedding marking query vs context. Two sites with
+    the same summary are interchangeable, which is what makes a *retrieved set*
+    the right abstraction rather than an ordered list.
+    """
+
+    def __init__(self, d: int = 256, depth: int = 4, heads: int = 8,
+                 dropout: float = 0.1):
         super().__init__()
-        raise NotImplementedError("see module docstring and docs/architecture.md")
+        self.role = nn.Embedding(2, d)          # 0 = context, 1 = query
+        layer = nn.TransformerEncoderLayer(
+            d, heads, dim_feedforward=4 * d, dropout=dropout,
+            activation="gelu", batch_first=True, norm_first=True)
+        self.enc = nn.TransformerEncoder(layer, depth)
+        self.norm = nn.LayerNorm(d)
+
+    def forward(self, tok: torch.Tensor, site_valid: torch.Tensor):
+        """tok (B,S,K,d); site_valid (B,S) 1.0 where the site slot is real."""
+        B, S, K, d = tok.shape
+        role = torch.zeros(B, S, dtype=torch.long, device=tok.device)
+        role[:, 0] = 1
+        x = tok + self.role(role)[:, :, None, :]
+        x = x.reshape(B, S * K, d)
+        pad = site_valid[:, :, None].expand(B, S, K).reshape(B, S * K).bool()
+        h = self.enc(self.norm(x), src_key_padding_mask=~pad)
+        return h.reshape(B, S, K, d)
+
+
+class PUBModel(nn.Module):
+    """SiteEncoder (level 1) -> connector (level 2) -> query decoder (level 3).
+
+    The query basin has EVERY streamflow patch masked. Context basins have
+    theirs visible. The query's own token stream then cross-attends to the
+    context-aware summaries and reconstructs its masked streamflow.
+
+    This is the minimal honest instantiation of the three-level design: the
+    connector never sees raw timesteps (only K summary tokens per site), and
+    the query's local detail never leaves the query site — the summary is a
+    CONDITIONING VECTOR, not a reconstruction.
+    """
+
+    def __init__(self, encoder, d: int = 256, depth: int = 4, heads: int = 8):
+        super().__init__()
+        self.encoder = encoder
+        self.connector = CrossSiteConnector(d, depth, heads)
+        self.cross = nn.MultiheadAttention(d, heads, batch_first=True)
+        self.norm_q = nn.LayerNorm(d)
+        self.norm_c = nn.LayerNorm(d)
+        self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
+                                  nn.Linear(d, encoder.patch))
+
+    def forward(self, batch: dict) -> torch.Tensor:
+        """batch fields are (B, S, ...) with site 0 the query.
+
+        Returns the query's reconstruction (B, N, V, patch).
+        """
+        B, S = batch["vis"].shape[:2]
+        flat = {k: v.reshape(B * S, *v.shape[2:]) for k, v in batch.items()
+                if k in ("attrs", "series", "vis", "valid", "doy")}
+        out = self.encoder(flat, return_hidden=True)
+
+        K = 1 + self.encoder.k
+        summ = torch.cat([out["t_static"], out["t_series"]], dim=1)
+        summ = summ.reshape(B, S, K, -1)
+        summ = self.connector(summ, batch["site_valid"])
+
+        # query stream attends to ALL context-aware summaries
+        d = summ.shape[-1]
+        hq = out["h_series"].reshape(B, S, -1, d)[:, 0]        # (B, N*V, d)
+        ctx = summ.reshape(B, S * K, d)
+        a, _ = self.cross(self.norm_q(hq), self.norm_c(ctx), self.norm_c(ctx),
+                          need_weights=False)
+        z = hq + a
+        N, V = batch["series"].shape[2], batch["series"].shape[3]
+        return self.head(z).reshape(B, N, V, self.encoder.patch)

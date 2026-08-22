@@ -103,7 +103,7 @@ class SiteEncoder(nn.Module):
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, patch))
 
-    def forward(self, batch: dict) -> dict:
+    def forward(self, batch: dict, return_hidden: bool = False) -> dict:
         a, x = batch["attrs"], batch["series"]
         vis, valid, doy = batch["vis"], batch["valid"], batch["doy"]
         B, N, V, _ = x.shape
@@ -138,8 +138,14 @@ class SiteEncoder(nn.Module):
         h = self.trunk(self.norm_in(seq), src_key_padding_mask=~pad)
         t_static = h[:, :1]
         t_series = h[:, 1:1 + self.k]
-        recon = self.head(h[:, 1 + self.k:]).reshape(B, N, V, self.patch)
-        return {"recon": recon, "t_static": t_static, "t_series": t_series}
+        h_series = h[:, 1 + self.k:]
+        recon = self.head(h_series).reshape(B, N, V, self.patch)
+        out = {"recon": recon, "t_static": t_static, "t_series": t_series}
+        if return_hidden:
+            # the connector's level-3 decoder needs the per-token stream, not
+            # just the summaries -- local detail stays at the site
+            out["h_series"] = h_series
+        return out
 
 
 def masked_mse(recon, target, vis, valid):
