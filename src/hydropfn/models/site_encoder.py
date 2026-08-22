@@ -45,7 +45,9 @@ import math
 import torch
 import torch.nn as nn
 
-D_MODEL = 256          # StefaLand's hidden_size, so its weights load unchanged
+D_MODEL = 256          # StefaLand's hidden_size; with d_ffd=512 the TRUNK
+                       # loads directly (2.108M params). The embeddings do
+                       # not -- see docs/stefaland_reuse.md.
 
 
 class SiteEncoder(nn.Module):

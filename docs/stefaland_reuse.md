@@ -1,7 +1,13 @@
 # Reusing StefaLand weights in unit A
 
-Short answer: **yes, substantially — the trunk and both input paths transfer;
-only the observation channels and the summary queries are new.**
+Short answer: **the TRUNK transfers — 2.108M of 4.771M parameters (~44%). The
+input and output embeddings do not**, because StefaLand uses one MLP per named
+variable while we use a shared projection plus a variable-ID embedding, and its
+variable names are the global dataset's rather than CAMELS's.
+
+An earlier version of this page claimed both input paths transferred. That was
+written from the config files; inspecting the actual tensors showed it was
+wrong. The corrected table is below.
 
 ## What StefaLand is, as inspected
 
