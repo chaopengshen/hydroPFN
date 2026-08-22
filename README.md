@@ -208,8 +208,8 @@ src/hydropfn/
 scripts/    figure and deck generation
 experiments/  the evidence base (see below)
 tests/      test_smoke.py   invariant checks; run after any lib edit
-docs/       architecture.md, stefaland_reuse.md, proposal_seed.md,
-            dev_log.md, code review
+docs/       architecture.md, environments.md, stefaland_reuse.md,
+            proposal_seed.md, dev_log.md, code review
 ```
 
 The templates are not placeholders — each carries the design decision, the
