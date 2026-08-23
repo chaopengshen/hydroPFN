@@ -162,14 +162,15 @@ class PUBModel(nn.Module):
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, encoder.patch))
 
-    def forward(self, batch: dict) -> torch.Tensor:
+    def forward(self, batch: dict, return_attrs: bool = False):
         """batch fields are (B, S, ...) with site 0 the query.
 
         Returns the query's reconstruction (B, N, V, patch).
         """
         B, S = batch["vis"].shape[:2]
         flat = {k: v.reshape(B * S, *v.shape[2:]) for k, v in batch.items()
-                if k in ("attrs", "series", "vis", "valid", "doy")}
+                if k in ("attrs", "series", "vis", "valid", "doy",
+                         "attr_vis")}
         out = self.encoder(flat, return_hidden=True, causal=self.causal)
 
         K = 1 + self.encoder.k
@@ -202,4 +203,8 @@ class PUBModel(nn.Module):
                                 self.norm_tc(ks), need_weights=False)
             z = z + ta.reshape(B, N, V, d).reshape(B, N * V, d)
 
-        return self.head(z).reshape(B, N, V, self.encoder.patch)
+        rec = self.head(z).reshape(B, N, V, self.encoder.patch)
+        if return_attrs:
+            # query site's reconstructed attributes, (B, n_attr)
+            return rec, out["attr_recon"].reshape(B, S, -1)[:, 0]
+        return rec

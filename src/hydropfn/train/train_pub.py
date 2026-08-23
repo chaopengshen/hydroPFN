@@ -52,7 +52,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
-               ctx_start=None, latlon=None, self_da=0, mask_kind=None):
+               ctx_start=None, latlon=None, self_da=0, mask_kind=None,
+               score_tail=0, attr_mask=0.0):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -145,9 +146,34 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     # columns were byte-identical between the mode A and mode B result files.
     task = {"attrs": A[sites], "series": ser, "vis": vis, "valid": val,
             "doy": dd, "site_valid": np.ones(S, np.float32)}
+    # Attribute masking applies to the QUERY only. Context sites keep their
+    # attributes, so the model must recover the query's geology from its
+    # forcings, its discharge and its neighbours -- not from a copy of itself.
+    av = np.ones((S, A.shape[1]), np.float32)
+    if attr_mask > 0:
+        av[0] = (rng.random(A.shape[1]) > attr_mask).astype(np.float32)
+    task["attr_vis"] = av
     # which query patches are actually being asked for -- eval scores ONLY
     # these, so self-DA is not credited for copying back its visible history
-    task["_score"] = (vis[0, :, obs_col] == 0.0)
+    # WHAT GETS SCORED. Normally every hidden query patch. `score_tail` P
+    # restricts it to the last P patches REGARDLESS of masking, which is the
+    # only way to put the gauged and ungauged arms on the same target:
+    #
+    #   own history?  neighbours?   arm
+    #   no            no            forcing -> runoff alone
+    #   no            yes           OUR claim: DA from nearby gauges
+    #   yes           no            Jamaat's information set
+    #   yes           yes           both, and not separable without the above
+    #
+    # Without this, the ungauged arm is scored on all 32 patches (early ones
+    # having almost no history) while the self-DA arm is scored on the final
+    # patch only. Self-DA K=0 then reads WORSE than ungauged K=0 despite
+    # strictly more information -- the scored sets differ, not the skill.
+    sc = (vis[0, :, obs_col] == 0.0)
+    if score_tail:
+        sc = np.zeros_like(sc)
+        sc[-score_tail:] = True
+    task["_score"] = sc
     task["_kind"] = mask_kind or ("self_da" if self_da else "whole_site")
     if latlon is not None:
         # site 0 is the query; the connector encodes displacement FROM it
@@ -340,12 +366,28 @@ def main(a):
                                      geo_rank=geo_rank_train,
                                      start_hi=train_end_patch, ctx_start=cs,
                                      latlon=ll if a.geo else None,
-                                     self_da=a.self_da,
+                                     # TRAINING tail length is RANDOM.
+                                     # Fixing it at --self-da (=1) hides one
+                                     # patch per task, so the model gets 32x
+                                     # less gradient than the PUB arm, which
+                                     # hides all 32. Measured cost of getting
+                                     # this wrong: self-DA K=0 scored 0.460
+                                     # against 0.693 for the arm with STRICTLY
+                                     # LESS information. That is the
+                                     # `causal_tail` mask kind: cut anywhere,
+                                     # predict the rest. Eval still uses the
+                                     # fixed --self-da tail.
+                                     self_da=(int(rng.integers(1, a.win // 2))
+                                              if a.self_da else 0),
+                                     score_tail=a.score_tail,
+                                     attr_mask=a.mask_attrs,
                                      mask_kind=(str(rng.choice(MASK_KINDS))
                                                 if a.mask_mix else None))
                 tasks.append(t)
             b = collate(tasks)
-            rec = net(b)
+            rec = net(b, return_attrs=a.mask_attrs > 0)
+            if a.mask_attrs > 0:
+                rec, attr_rec = rec
             w = ((1 - b["vis"][:, 0]) * b["valid"][:, 0])[..., obs_col]
             tgt = b["series"][:, 0][..., obs_col, :]
             pred = rec[..., obs_col, :]
@@ -380,7 +422,8 @@ def main(a):
     for K in [int(x) for x in a.k_eval.split(",")]:
         erng = np.random.default_rng(123)
         # per-basin accumulators, so rolling origins concatenate IN ORDER
-        acc = {int(q): {"y": [], "p": [], "nn": [], "cm": []} for q in te}
+        acc = {int(q): {"y": [], "p": [], "nn": [], "cm": [], "idw": []}
+               for q in te}
         for st in starts:
             for i0 in range(0, len(te), a.batch):
                 chunk = te[i0:i0 + a.batch]
@@ -392,7 +435,8 @@ def main(a):
                         Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
                         geo_rank=geo_rank, ctx_start=cs,
-                        latlon=ll if a.geo else None, self_da=a.self_da)
+                        latlon=ll if a.geo else None, self_da=a.self_da,
+                        score_tail=a.score_tail, attr_mask=a.mask_attrs)
                     csl = sl if cs is None else slice(cs, cs + a.win)
                     tasks.append(t)
                     metas.append((int(q), sites, sl, csl, t["_score"]))
@@ -413,11 +457,27 @@ def main(a):
                             Xp[sites[1], csl][sc][..., obs_col, :].ravel())
                         d["cm"].append(Xp[sites[1:], csl][:, sc][..., obs_col, :]
                                        .mean(0).ravel())
+                        # PROPER SPATIAL-INTERPOLATION BASELINE. ctx_mean
+                        # weights every donor equally, which is a weak
+                        # strawman -- real donor transfer is distance
+                        # weighted. If inverse-distance weighting of
+                        # concurrent neighbour discharge approaches our score,
+                        # then the model is an expensive kriging and the
+                        # in-context machinery is not earning its keep.
+                        dd_ = ll[sites[1:]] - ll[sites[0]]
+                        dd_ = np.sqrt((dd_[:, 0]) ** 2 +
+                                      (dd_[:, 1] * 0.766) ** 2)
+                        wt = 1.0 / (dd_ ** 2 + 1e-3)
+                        wt = (wt / wt.sum()).astype(np.float32)
+                        d["idw"].append(
+                            (Xp[sites[1:], csl][:, sc][..., obs_col, :]
+                             * wt[:, None, None]).sum(0).ravel())
         order = [int(q) for q in te]
         ys = [np.concatenate(acc[q]["y"]) for q in order]
         ps = [np.concatenate(acc[q]["p"]) for q in order]
         nn_ps = [np.concatenate(acc[q]["nn"]) for q in order] if K > 0 else []
         cm_ps = [np.concatenate(acc[q]["cm"]) for q in order] if K > 0 else []
+        idw_ps = [np.concatenate(acc[q]["idw"]) for q in order] if K > 0 else []
         _y, _p = np.concatenate(ys), np.concatenate(ps)
         # DAILY is the honest headline; the 16-day mean is reported too because
         # aggregation raises R2 and any comparison must state which is which.
@@ -431,12 +491,15 @@ def main(a):
         if K > 0:
             rec_row["nn_donor"] = r2(np.concatenate(ys), np.concatenate(nn_ps))
             rec_row["ctx_mean"] = r2(np.concatenate(ys), np.concatenate(cm_ps))
+            rec_row["idw"] = r2(np.concatenate(ys), np.concatenate(idw_ps))
             rec_row["nn_donor_nse"] = nse_per_site(ys, nn_ps)[0]
             rec_row["ctx_mean_nse"] = nse_per_site(ys, cm_ps)[0]
+            rec_row["idw_nse"] = nse_per_site(ys, idw_ps)[0]
         rows.append(rec_row)
         print(f"  K={K:3d}  pooled-daily {rec_row['model']:+.4f}"
               f"  16d {rec_row['model_patch16']:+.4f}"
               f"  | per-basin NSE med {med:+.4f} ({frac:.0%} of {nb} > 0)"
+              + (f"  | IDW {rec_row['idw_nse']:+.4f}" if K > 0 else "")
               + (f"   nn_donor {rec_row['nn_donor']:+.4f}"
                  f"   ctx_mean {rec_row['ctx_mean']:+.4f}" if K > 0 else ""),
               flush=True)
@@ -493,11 +556,25 @@ if __name__ == "__main__":
                     help="training windows must start before this DAY. "
                          "Without it there is no temporal split and period "
                          "memorisation is uncontrolled -- see Diagnosis.md")
+    ap.add_argument("--score-tail", type=int, default=0, metavar="P",
+                    help="score ONLY the last P patches, whatever the mask. "
+                         "Use with --roll to put the gauged (--self-da) and "
+                         "ungauged arms on an identical target so own-history "
+                         "and neighbour effects can be read separately.")
     ap.add_argument("--roll", type=int, default=1, metavar="N",
                     help="rolling-origin evaluation: N window starts, one "
                          "patch apart, concatenated per basin before scoring. "
                          "Needed for --self-da, where one origin scores only "
                          "16 days per basin and NSE degenerates.")
+    ap.add_argument("--mask-attrs", type=float, default=0.0, metavar="FRAC",
+                    help="hide this fraction of the QUERY's static attributes "
+                         "and reconstruct them. First cross-module "
+                         "reconstruction (time series -> statics); without it "
+                         "statics only ever flow INTO the model and the "
+                         "embedding is a runoff-relevant projection of "
+                         "geology rather than geology.")
+    ap.add_argument("--attr-w", type=float, default=1.0,
+                    help="weight on the attribute-reconstruction loss")
     ap.add_argument("--mask-mix", action="store_true",
                     help="MIXTURE PRETRAINING: sample the query's mask from "
                          "all four kinds (random_span, causal_tail, "

@@ -80,8 +80,22 @@ class SiteEncoder(nn.Module):
         super().__init__()
         self.d, self.patch, self.n_vars, self.k = d, patch, n_vars, k_summary
 
+        # 2*n_attr in: the (masked) values AND a visibility indicator per
+        # attribute. Zeroing a masked attribute without the indicator is the
+        # classic absent/zero conflation -- a genuine 0.0 after
+        # standardisation means "at the mean", not "missing".
         self.static_mlp = nn.Sequential(
-            nn.Linear(n_attr, d), nn.GELU(), nn.Linear(d, d))
+            nn.Linear(2 * n_attr, d), nn.GELU(), nn.Linear(d, d))
+        # CROSS-MODULE RECONSTRUCTION: statics predicted back from the static
+        # token, which has attended over the whole time series. Until this
+        # existed, attributes only ever flowed INTO the model -- no loss term
+        # asked it to represent geology beyond what moves the hydrograph, so
+        # the static embedding was a runoff-relevant projection of geology
+        # rather than geology. This is the head that makes probing them
+        # meaningful, and the first reconstruction that crosses modules
+        # (time series -> statics) rather than staying within one.
+        self.attr_head = nn.Sequential(
+            nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Linear(d, n_attr))
         self.value_proj = nn.Linear(patch, d)
         self.var_emb = nn.Embedding(n_vars, d)
         self.mask_tok = nn.Parameter(torch.zeros(d))
@@ -141,7 +155,10 @@ class SiteEncoder(nn.Module):
         dev = x.device
 
         # ---- static token
-        st = self.static_mlp(a) + self.static_role                # (B, d)
+        av = batch.get("attr_vis")
+        if av is None:
+            av = torch.ones_like(a)
+        st = self.static_mlp(torch.cat([a * av, av], dim=-1)) + self.static_role
 
         # ---- series tokens: value (or [MASK]) + variable id + position + doy
         val = self.value_proj(x)                                  # (B,N,V,d)
@@ -173,7 +190,8 @@ class SiteEncoder(nn.Module):
         t_series = h[:, 1:1 + self.k]
         h_series = h[:, 1 + self.k:]
         recon = self.head(h_series).reshape(B, N, V, self.patch)
-        out = {"recon": recon, "t_static": t_static, "t_series": t_series}
+        out = {"recon": recon, "t_static": t_static, "t_series": t_series,
+               "attr_recon": self.attr_head(t_static.squeeze(1))}
         if return_hidden:
             # the connector's level-3 decoder needs the per-token stream, not
             # just the summaries -- local detail stays at the site
