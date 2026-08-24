@@ -431,6 +431,13 @@ different period, window-length draws, realistic gap patterns, and K up to
 
 ## Results by task
 
+> Full benchmark detail — the reference results we compare to (with
+> their protocols), the exact command behind every number, and how to
+> verify the train/test split — is in **[docs/benchmarks.md](docs/benchmarks.md)**.
+>
+> Verify the split before trusting any number:
+> `python scripts/verify_split.py --nc data/CAMELS_Frederik.nc`
+
 All numbers are **median per-basin NSE**. **Protocols differ between blocks and
 are not cross-comparable.**
 

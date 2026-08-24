@@ -614,6 +614,21 @@ def main(a):
         n_sc = ys[0].size // a.patch          # scored patches per basin
         _ya = _y.reshape(-1, n_sc, a.patch).mean(-1)
         _pa = _p.reshape(-1, n_sc, a.patch).mean(-1)
+        if a.by_lead:
+            # NSE BY LEAD DAY inside the masked patch. The head emits `patch`
+            # daily values per token, so a patch=16 model already produces a
+            # 1-day-ahead prediction -- averaging leads 1..16 and calling the
+            # result a 16-day task was a SCORING choice, not an architectural
+            # limit. Reading lead 1 out of this model is the same weights
+            # doing the Jamaat task, with no separate patch=1 model.
+            for d in (0, 1, 3, 7, 15):
+                if d >= a.patch:
+                    continue
+                yl = [y.reshape(-1, a.patch)[:, d] for y in ys]
+                pl = [q.reshape(-1, a.patch)[:, d] for q in ps]
+                m_, f_, _ = nse_per_site(yl, pl)
+                print(f"      lead {d+1:2d} d: per-basin median NSE "
+                      f"{m_:+.4f} ({f_:.0%} > 0)", flush=True)
         med, frac, nb = nse_per_site(ys, ps)
         rec_row = {"K": K, "n": int(_y.size), "model": r2(_y, _p),
                    "model_patch16": r2(_ya, _pa),
@@ -692,6 +707,9 @@ if __name__ == "__main__":
                          "patches. Tests whether a model trained only on "
                          "NEIGHBOUR context can assimilate its own gauge with "
                          "no retraining.")
+    ap.add_argument("--by-lead", action="store_true",
+                    help="report NSE per LEAD DAY inside the masked patch, "
+                         "so a patch=16 model can be read at 1-day lead")
     ap.add_argument("--eval-conditionals", action="store_true",
                     help="also score gap-filling, cross-variable and "
                          "forecasting conditionals -- otherwise the mixture "
