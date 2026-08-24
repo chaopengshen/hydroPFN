@@ -155,6 +155,18 @@ class PUBModel(nn.Module):
         self.cross = nn.MultiheadAttention(d, heads, batch_first=True)
         self.norm_q = nn.LayerNorm(d)
         self.norm_c = nn.LayerNorm(d)
+        self.heads = heads
+        # DISTANCE AS AN ATTENTION BIAS, not merely an added vector.
+        # The additive geo embedding lets attention INFER a distance
+        # weighting; this makes producing one the path of least resistance --
+        # a learned per-head function of separation added straight to the
+        # attention logits, which is the functional form of a variogram /
+        # kriging weight. Euclidean separation is still the wrong metric for
+        # hydrology (two gauges on the SAME river beat two the same distance
+        # apart on different rivers); flow-network distance from the DEM arm
+        # is the real fix and is not available yet.
+        self.dbias = nn.Sequential(
+            nn.Linear(9, 32), nn.GELU(), nn.Linear(32, heads)) if geo else None
         if time_aligned:
             self.tcross = nn.MultiheadAttention(d, heads, batch_first=True)
             self.norm_tq = nn.LayerNorm(d)
@@ -199,8 +211,30 @@ class PUBModel(nn.Module):
             if self.tgeo is not None and batch.get("latlon") is not None:
                 hc = hc + self.tgeo(batch["latlon"])[:, 1:, None, None, :]
             ks = hc.permute(0, 2, 1, 3, 4).reshape(B * N, (S - 1) * V, d)
+            abias = None
+            if self.dbias is not None and batch.get("latlon") is not None:
+                ll = batch["latlon"]
+                rel = ll[:, 1:] - ll[:, :1]
+                rel = torch.stack([rel[..., 0],
+                                   rel[..., 1] * GeoEncoding.LON_SCALE], -1)
+                dist = rel.norm(dim=-1)                       # (B, S-1)
+                # log-spaced radial basis so the bias can express a decay
+                # curve rather than a single slope
+                sc = torch.tensor([0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0],
+                                  device=dist.device)
+                feat = torch.cat([
+                    torch.exp(-(dist[..., None] / sc) ** 2),
+                    dist[..., None], torch.log1p(dist[..., None])], -1)
+                bh = self.dbias(feat)                          # (B,S-1,heads)
+                bh = bh[:, None].expand(B, N, S - 1, self.heads)
+                bh = bh.reshape(B * N, S - 1, self.heads)
+                bh = bh.permute(0, 2, 1)[..., None].expand(
+                    B * N, self.heads, S - 1, V).reshape(
+                    B * N * self.heads, 1, (S - 1) * V)
+                abias = bh.expand(B * N * self.heads, V, (S - 1) * V)
             ta, _ = self.tcross(self.norm_tq(qs), self.norm_tc(ks),
-                                self.norm_tc(ks), need_weights=False)
+                                self.norm_tc(ks), need_weights=False,
+                                attn_mask=abias)
             z = z + ta.reshape(B, N, V, d).reshape(B, N * V, d)
 
         rec = self.head(z).reshape(B, N, V, self.encoder.patch)
