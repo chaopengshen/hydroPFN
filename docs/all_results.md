@@ -107,11 +107,14 @@ they propagate an initial condition forward, we run with **known forcings**, so
 
 ## Protocol D — patch=1, separate model
 
-| model | route for the site's own t−1 data | K=0 |
-|---|---|---|
-| `J_da_k0` | **`--self-da`** — own token stream, self-attention | **0.8765** |
-| `X_p1ctx` | **`--self-ctx`** — own basin as a context entry | *running* |
-| *Jamaat 2025, variational DA* — **gauged basins** | own gauge, optimisation per step | *0.82* |
+| model | route for the site's own t−1 data | K=0 training | K=0 |
+|---|---|---|---|
+| `J_da_k0` | **`--self-da`** — own token stream, self-attention | 7/7 | **0.8765** |
+| `X_p1ctx` | **`--self-ctx`** — own basin as a context entry | 3/7 | **0.7202** |
+| `X_p1ctx_k0` | `--self-ctx`, matched allocation | 7/7 | *running* |
+| *Jamaat 2025, variational DA* — **gauged basins** | own gauge, optimisation per step | — | *0.82* |
+
+`X_p1ctx` at K=4 reaches 0.7901.
 
 ### The confound this resolves
 
@@ -121,13 +124,20 @@ route. **That comparison is invalid**: those runs differ in *both* route and
 patch size. `X_p1ctx` is the missing cell — `patch=1` with the context route —
 and it separates the two explanations:
 
-- if `X_p1ctx` ≈ 0.876 → the gap was **resolution**, and the context route is
-  fine; keep it, since it is the composable one.
-- if `X_p1ctx` ≈ 0.813 → the gap was the **route**, and feeding a site's own
-  lagged data through its own token stream really is stronger than routing it
-  through cross-site attention.
+**Result: it is the ROUTE.** At matched `patch=1`, the self-da route scores
+0.8765 and the context route 0.7202 — a gap of **0.156** in favour of feeding a
+site's own lagged data through its own token stream rather than through
+cross-site attention.
 
-Until that lands, **no claim should be made about which route is better.**
+This **reverses an earlier claim**. On a `patch=16` pair the context route
+looked +0.11 *better* (0.7878 vs 0.6764), and that was used to argue
+composability came free. It does not: at matched resolution, composability
+appears to cost accuracy.
+
+**Still not fully clean.** `J_da_k0` trained K=0 on 7/7 tasks; `X_p1ctx` on
+3/7. Per the allocation lesson (which cost 0.17 on this very task once
+already), part of that 0.156 may be allocation rather than route.
+`X_p1ctx_k0` matches the allocation exactly and is the deciding run.
 
 ---
 
@@ -141,11 +151,37 @@ in training, temporal split only. Ours is PUR.
 | Jamaat 2025, δHBV no DA | 0.75 | 531 gauged |
 | Jamaat 2025, LSTM no DA | 0.74 | 531 gauged |
 | Jamaat 2025, δHBV-DA-PS / LSTM-DA (1-day lead) | 0.82 | 531 gauged |
-| Yang 2026, h-Diffusion (hourly) | 0.780 | 516 gauged |
-| Yang 2026, h-Diffusion-DA (hourly) | 0.832 | 516 gauged |
+| Yang 2026, h-Diffusion — **HOURLY NSE** | 0.780 | 516 gauged |
+| Yang 2026, h-Diffusion-DA — **HOURLY NSE** | 0.832 | 516 gauged |
 
-Yang reports **no daily-scale metric** — daily discharge is an *input* to
-h-Diffusion, never a scored output.
+**The Yang rows are not comparable to anything else on this page and must not
+be placed beside our numbers.** They are *hourly* NSE; every other number here
+is daily. Hourly and daily NSE are different targets, and neither bounds the
+other. Yang reports **no daily-scale metric at all** — daily discharge is an
+*input* to h-Diffusion (observed or δHBV-simulated), never a scored output. The
+paper is relevant for its *mechanism* (RePaint inpainting as training-free DA,
+the same family as ours), not for its numbers.
+
+---
+
+## Data latency — what if the most recent observation is missing?
+
+Operationally decisive, since real gauges have reporting lag and outages.
+Protocol B, K=0 (no neighbours), varying how stale the site's own record is:
+
+| last observation | NSE |
+|---|---|
+| 16 days stale | 0.7878 |
+| 32 days stale | 0.7751 |
+| 64 days stale | 0.7622 |
+| 128 days stale | 0.7603 |
+| *no record at all (LSTM)* | *0.7222* |
+
+**−0.028 over an eightfold increase in staleness.** Even ~4 months stale, the
+record is still worth +0.038 over having none. The degradation is graceful
+because tail length was **drawn randomly during training** (U{1…15} patches),
+so staleness was in the task distribution — the same principle that governs
+everything else here: the capability exists because it was trained.
 
 ---
 
