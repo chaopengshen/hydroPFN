@@ -379,7 +379,28 @@ def main(a):
 
     t0 = time.time()
     if a.load:
-        net.load_state_dict(torch.load(a.load, map_location=DEVICE)["net"])
+        sd = torch.load(a.load, map_location=DEVICE)["net"]
+        miss, unexp = net.load_state_dict(sd, strict=False)
+        if miss:
+            # A module absent from an older checkpoint would otherwise keep
+            # its RANDOM INIT and inject noise -- the same failure that made
+            # zero-shot self-as-context score 0.249. Zero it instead, so a
+            # missing module is a genuine no-op, and say so.
+            import torch.nn as _nn
+            zeroed = set()
+            for k in miss:
+                mod = net
+                for part in k.split(".")[:-1]:
+                    mod = getattr(mod, part)
+                with torch.no_grad():
+                    getattr(mod, k.split(".")[-1]).zero_()
+                zeroed.add(k.split(".")[0])
+            print(f"  WARNING checkpoint predates {sorted(zeroed)} -- "
+                  f"ZEROED ({len(miss)} tensors) so they are no-ops, NOT "
+                  f"left at random init", flush=True)
+        if unexp:
+            print(f"  WARNING unexpected keys ignored: {sorted(unexp)[:4]}",
+                  flush=True)
         print(f"  LOADED {a.load} -- skipping training", flush=True)
         a.epochs = 0
     for ep in range(a.epochs):
@@ -478,6 +499,50 @@ def main(a):
         print(f"  ROLLING: {a.roll} origins from patch {starts[0]} to "
               f"{starts[-1]}; each basin's scored tails are concatenated "
               f"into one series before NSE", flush=True)
+    # ---- OTHER CONDITIONALS. Without this the mixture is only ever scored
+    # on the PUB task, which measures what it COSTS and never what it BUYS --
+    # the same mistake made with the attribute head, measured for cost while
+    # its loss term was silently absent. Each conditional is scored on
+    # exactly the positions it hid, on the SAME held-out basins.
+    if a.eval_conditionals:
+        print("  === other conditionals (held-out basins, K=4) ===",
+              flush=True)
+        crng = np.random.default_rng(7)
+        for kind in ("random_span", "whole_variable", "causal_tail"):
+            for vsel, vname in ((obs_col, "QObs"), (0, "prcp")):
+                ys_c, ps_c = [], []
+                for i0 in range(0, len(te), a.batch):
+                    chunk, tasks, metas = te[i0:i0 + a.batch], [], []
+                    for q in chunk:
+                        t, sites, sl = build_task(
+                            Xp, A_s, valid_p, doy, int(q), tr, 4, crng,
+                            a.win, obs_col, a.retrieval, nn_rank,
+                            fixed_start=a.eval_start, geo_rank=geo_rank,
+                            latlon=ll if a.geo else None,
+                            area=ar if a.area_scale else None)
+                        v = np.ones((a.win, Xp.shape[2]), np.float32)
+                        if kind == "random_span":
+                            st = int(crng.integers(0, a.win // 2))
+                            v[st:st + a.win // 4, vsel] = 0.0
+                        elif kind == "whole_variable":
+                            v[:, vsel] = 0.0
+                        else:
+                            v[int(a.win * 0.75):, vsel] = 0.0
+                        t["vis"][0] = v
+                        tasks.append(t); metas.append((sites, sl, v))
+                    b = collate(tasks)
+                    with torch.no_grad():
+                        rec = net(b)
+                    for j, (sites, sl, v) in enumerate(metas):
+                        m = (v[:, vsel] == 0.0)
+                        ys_c.append(
+                            Xp[sites[0], sl][m][..., vsel, :].ravel())
+                        ps_c.append(
+                            rec[j][m][..., vsel, :].cpu().numpy().ravel())
+                med_c = nse_per_site(ys_c, ps_c)[0]
+                print(f"    {kind:15s} on {vname:5s}  per-basin median "
+                      f"NSE {med_c:+.4f}", flush=True)
+
     for K in [int(x) for x in a.k_eval.split(",")]:
         erng = np.random.default_rng(123)
         # per-basin accumulators, so rolling origins concatenate IN ORDER
@@ -627,6 +692,11 @@ if __name__ == "__main__":
                          "patches. Tests whether a model trained only on "
                          "NEIGHBOUR context can assimilate its own gauge with "
                          "no retraining.")
+    ap.add_argument("--eval-conditionals", action="store_true",
+                    help="also score gap-filling, cross-variable and "
+                         "forecasting conditionals -- otherwise the mixture "
+                         "is only measured on PUB, i.e. its cost and never "
+                         "its benefit")
     ap.add_argument("--area-scale", action="store_true",
                     help="give context tokens the log drainage-area RATIO to "
                          "the query, the conventional donor-transfer scaling")
