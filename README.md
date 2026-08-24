@@ -431,6 +431,11 @@ different period, window-length draws, realistic gap patterns, and K up to
 
 ## Results by task
 
+> **[docs/all_results.md](docs/all_results.md) — every number in one
+> table with its protocol column.** Numbers here span four protocols and
+> comparing across them has produced wrong conclusions repeatedly; that
+> page states which rows may be compared.
+>
 > Full benchmark detail — the reference results we compare to (with
 > their protocols), the exact command behind every number, and how to
 > verify the train/test split — is in **[docs/benchmarks.md](docs/benchmarks.md)**.
