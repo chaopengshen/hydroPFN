@@ -166,8 +166,10 @@ Second region set (`02,07,10`, single seed): ours 0.7278, LSTM 0.7074,
 
 ## Everything else that qualifies these numbers
 
-- **16-day patch aggregates, not daily.** Not comparable to published daily-NSE
-  PUB results. Never quote alongside them without saying so.
+- ~~16-day patch aggregates, not daily.~~ **WRONG — corrected 2026-08-22.**
+  `train_pub.py` always scored DAILY values; `lstm_baseline.py` scored 16-day
+  means. See "The scoring-resolution mismatch" below. Our numbers ARE daily
+  and are comparable to published daily results on that axis.
 - **The two-path design costs −0.25** in the no-context mode (0.778 → 0.526).
   Re-weighting K=0 from 1/6 to 3/8 of training recovers +0.055, essentially
   free, but nowhere near all. Deployment implication: ship two models.
@@ -202,7 +204,9 @@ top of this document is the same class of error, still open.**
 # CONSOLIDATED — after four fairness challenges
 
 All numbers below: leave-region-out (`01,11,17`), **temporal split** (train
-ends day 9000, evaluate day 9600, 608-day gap), 16-day patches.
+ends day 9000, evaluate day 9600, 608-day gap), scored on **DAILY** values.
+(This section originally said "16-day patches" — wrong for our model, and the
+source of the mismatch corrected on 2026-08-22.)
 
 ## The comparison that matters, on IDENTICAL 62 basins
 
@@ -266,3 +270,148 @@ forced context 190 km away, and a config table read instead of the tensors.
 Each was individually defensible; together they biased consistently in one
 direction. **Every one was caught by someone asking whether the setup matched
 the real situation — none by the pre-registered plan.**
+
+
+---
+
+# 2026-08-22 — three verification findings, and what they cost
+
+Prompted by three questions about the architecture. All three checks came back
+badly. Recorded here because two of them invalidated numbers already reported.
+
+## 1. The scoring-resolution mismatch (invalidated every head-to-head)
+
+`train_pub.py` scored **512 daily values**; `lstm_baseline.py` scored **32
+sixteen-day means**, under a comment reading *"matching the PUB evaluation
+exactly"*. It did not. I wrote that comment and then repeatedly cited it as
+grounds that the comparison was like-for-like.
+
+Aggregation is worth **+0.023 R²**, measured on both LSTM arms:
+
+| arm | R² daily | R² 16-day means |
+|---|---|---|
+| PUB LSTM (b) | 0.7383 | 0.7619 |
+| gauged-ceiling LSTM | 0.8442 | 0.8670 |
+
+Every LSTM number previously quoted was the right-hand column; every number of
+ours was the left. Corrected, on daily throughout:
+
+| | R² daily |
+|---|---|
+| PUB LSTM (b) — no test gauge, no neighbours | 0.7383 |
+| gauged ceiling — test gauge IN training | 0.8442 |
+| ours, leak closed | **0.8584** |
+| ours, 5× budget | **0.8642** |
+
+Two consequences. Our margin over the PUB LSTM is **+0.120, not +0.103**. And
+**we exceed the "gauged ceiling"** by 0.014 (0.020 at 5× budget) — previously
+reported as sitting just below it. The user raised exactly this suspicion when
+the ceiling was first introduced; the scoring bug is what buried it.
+
+**The ceiling is not a ceiling.** It is a different information set. Ours has
+two things it lacks: concurrent discharge at neighbouring gauges, and
+bidirectional attention. Never state "beats the gauged ceiling" bare — it
+invites the reading that we beat having the gauge, which is not what happened.
+
+Both scripts now report both resolutions, always.
+
+## 2. No geospatial encoding in the connector
+
+`CrossSiteConnector.forward` added **only a role embedding**. The architecture
+figure has been claiming "add geo-encoding" throughout. The model chose context
+by geographic proximity and then treated it as exchangeable — it could not tell
+a gauge 20 km away from one 300 km away. That is the obvious suspect for the
+decay at large K: with no distance, the only way to discount a far gauge is to
+discount all of them.
+
+Now implemented as opt-in `geo=True`: Fourier encoding of **displacement from
+the query**. The first version scaled longitude by `cos(query_latitude)` — the
+better distance metric, but it makes the encoding a function of ABSOLUTE
+latitude, i.e. a region-identifying channel that would quietly undermine
+leave-region-out. Replaced with a fixed reference latitude: ~10% distance
+distortion across CONUS, exact translation invariance. Two tests pin both
+halves (`test_connector_geo_translation_invariant` at atol 1e-3 — float32
+rounding amplified by the 64 rad/deg top frequency, measured, not assumed;
+`test_connector_geo_responds_to_distance`).
+
+**Untrained. Whether it fixes the large-K decay is a hypothesis, not a result.**
+
+## 3. The model is not causal
+
+`nn.TransformerEncoder` with only a padding mask — fully bidirectional.
+Predicting day *t* it sees the whole 512-day window, including days after *t*,
+and the context sites' full windows. **The LSTM baseline is causal.** Ours is a
+smoother; the LSTM is a filter. An asymmetry favouring us that was never stated
+in any previous comparison.
+
+This is not automatically wrong. For **PUB as historical reconstruction** it is
+the correct tool — a hydrologist reconstructing 1990 has 1991 in hand. For the
+**mode A data-assimilation claim** it is not acceptable. The fix is not to make
+the model causal; it is to stop letting one number serve both claims.
+A causal-mask ablation would partition the +0.120 margin. **Not yet run.**
+
+## 4. Mode B baselines read the future (found while collecting mode B)
+
+`nn_donor`/`ctx_mean` computed from `Xp[sites[1], sl]` — the **eval** slice,
+always — regardless of `--context-period`. In mode B the model's context comes
+from the training period but the baselines still read the neighbours'
+*concurrent* discharge: the exact information mode B withholds from the model.
+The tell was that the baseline columns were byte-identical between the mode A
+and mode B result files.
+
+Fixed: baselines now read the context window. The mode B table reverses.
+
+| K | model | nn_donor | ctx_mean |
+|---|---|---|---|
+| 0 | 0.6359 | — | — |
+| 4 | 0.6371 | −0.793 | −0.663 |
+| 32 | 0.6392 | −0.793 | −0.510 |
+
+Negative baselines are the *correct* answer: matching flows across different
+years is worse than predicting the mean. Previously this table showed
+`ctx_mean 0.8215` against our `0.5086`, i.e. a trivial baseline crushing us.
+Entirely the bug.
+
+Mode B must now be stated as **two separate facts**:
+
+- **Context adds nothing in mode B**: K=0 → 0.6359, K=32 → 0.6392, gain
+  **+0.003**. Survives every fix (leaked +0.004, leak-closed +0.006).
+- **The model is far above any legitimate mode B baseline** (0.636 vs −0.79 to
+  −0.51) — but that value is entirely the per-site pathway (forcings and
+  statics), not the neighbours.
+
+### Budget check — RESOLVED, mode B is genuinely dead
+
+The retracted "two-path costs −0.25" was a pure budget artifact, so mode B was
+re-run at 5× compute before being declared dead. It is not an artifact:
+
+| | K=0 | K=32 | gain |
+|---|---|---|---|
+| 40 epochs | 0.6359 | 0.6392 | +0.003 |
+| 200 epochs | 0.7492 | 0.7543 | +0.005 |
+
+The absolute level WAS badly undertrained (+0.11 on K=0). **The context gain
+was not** — it stays ~zero at 5× budget. Contrast mode A at **+0.390**: a ~78×
+difference, robust to the leak fix, the baseline fix, and the budget.
+
+Note where mode B K=0 lands: **0.7492 daily, against the PUB LSTM's 0.7383
+daily** — a tie, and the same tie already established for unit A standalone.
+This locates the whole result: **without concurrent neighbours we are a
+regional LSTM.** Everything above that comes from reading neighbouring gauges
+in the eval window.
+
+Consequence for the "local stations not in training" case: a station absent
+from training contributes ~nothing through its history. If it helps at all, it
+helps through concurrent data — which makes it a mode A use case, not mode B.
+
+## What this run of errors has in common
+
+The four corrections at the top of this document were all **setup** errors. So
+are these. Every one was invisible from inside the plan and visible instantly
+on reading the artefact — the comment that claimed matching resolutions, the
+`forward` that had no geo term, the byte-identical baseline columns.
+
+The new entry in the pattern: **three of these four were errors in my own
+instrumentation, not in the model** — and two of them ran *against* us, which
+is why they survived so long. A bias that flatters gets challenged; a bias that
+penalises just looks like an honest result.

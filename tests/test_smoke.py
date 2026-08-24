@@ -156,3 +156,46 @@ if __name__ == "__main__":
     check_idw_and_masks()
     check_torch_seeding()
     print("all smoke tests passed")
+
+
+def test_connector_geo_translation_invariant():
+    """The geo encoding must depend on DISPLACEMENT, never absolute position.
+
+    An encoding that varies with absolute lat/lon lets the connector identify
+    which region a task came from, which would quietly break leave-region-out.
+    The first version of this failed here: it scaled longitude by
+    cos(query_latitude).
+    """
+    import torch
+    from hydropfn.models.connector import CrossSiteConnector
+
+    torch.manual_seed(0)
+    c = CrossSiteConnector(64, 2, 4, geo=True).eval()
+    tok, sv = torch.randn(2, 5, 4, 64), torch.ones(2, 5)
+    ll = torch.randn(2, 5, 2) * 3
+    # Tolerance is 1e-3, not 1e-5. The encoding is EXACTLY translation-
+    # invariant in real arithmetic; in float32 the subtraction
+    # `latlon - latlon[:, :1]` loses ~2e-6 on CONUS-magnitude coordinates and
+    # the top Fourier frequency (64 rad/deg) amplifies that into ~1e-4 on the
+    # output. Measured, not assumed: a genuine absolute-position leak moves
+    # the output by O(1), three orders above this.
+    with torch.no_grad():
+        a = c(tok, sv, ll)
+        for shift in ([7.0, 0.0], [0.0, -11.0], [20.0, 35.0], [100.0, 100.0]):
+            b = c(tok, sv, ll + torch.tensor(shift))
+            assert torch.allclose(a, b, atol=1e-3), f"leaks position: {shift}"
+
+
+def test_connector_geo_responds_to_distance():
+    """...but it must still DISTINGUISH near context from far context."""
+    import torch
+    from hydropfn.models.connector import CrossSiteConnector
+
+    torch.manual_seed(0)
+    c = CrossSiteConnector(64, 2, 4, geo=True).eval()
+    tok, sv = torch.randn(2, 5, 4, 64), torch.ones(2, 5)
+    near = torch.randn(2, 5, 2) * 0.1
+    far = near * 50
+    near[:, 0] = far[:, 0] = 0.0                 # query at the origin in both
+    with torch.no_grad():
+        assert not torch.allclose(c(tok, sv, near), c(tok, sv, far), atol=1e-4)

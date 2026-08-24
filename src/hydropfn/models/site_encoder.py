@@ -80,8 +80,22 @@ class SiteEncoder(nn.Module):
         super().__init__()
         self.d, self.patch, self.n_vars, self.k = d, patch, n_vars, k_summary
 
+        # 2*n_attr in: the (masked) values AND a visibility indicator per
+        # attribute. Zeroing a masked attribute without the indicator is the
+        # classic absent/zero conflation -- a genuine 0.0 after
+        # standardisation means "at the mean", not "missing".
         self.static_mlp = nn.Sequential(
-            nn.Linear(n_attr, d), nn.GELU(), nn.Linear(d, d))
+            nn.Linear(2 * n_attr, d), nn.GELU(), nn.Linear(d, d))
+        # CROSS-MODULE RECONSTRUCTION: statics predicted back from the static
+        # token, which has attended over the whole time series. Until this
+        # existed, attributes only ever flowed INTO the model -- no loss term
+        # asked it to represent geology beyond what moves the hydrograph, so
+        # the static embedding was a runoff-relevant projection of geology
+        # rather than geology. This is the head that makes probing them
+        # meaningful, and the first reconstruction that crosses modules
+        # (time series -> statics) rather than staying within one.
+        self.attr_head = nn.Sequential(
+            nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Linear(d, n_attr))
         self.value_proj = nn.Linear(patch, d)
         self.var_emb = nn.Embedding(n_vars, d)
         self.mask_tok = nn.Parameter(torch.zeros(d))
@@ -103,14 +117,48 @@ class SiteEncoder(nn.Module):
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, patch))
 
-    def forward(self, batch: dict, return_hidden: bool = False) -> dict:
+    def _causal_mask(self, N: int, V: int, dev) -> torch.Tensor:
+        """(L,L) bool attention mask, True = FORBIDDEN. Time flows one way.
+
+        Sequence layout is [static, k summaries, N*V series], series index
+        n*V+v, so patch(idx) = idx // V.
+
+        Three rules, and each one is load-bearing:
+          * series token at patch p attends to series tokens at patch <= p.
+          * the STATIC token attends only to itself. If it could attend
+            everywhere it would become a global pool of the whole window, and
+            every series token attending to it would inherit the future
+            through the back door.
+          * NOTHING may attend to the summary tokens, for the same reason:
+            they pool over all time by construction. They are still computed
+            (they read everything) but in causal mode they are dead ends, and
+            PUBModel skips the pooled path that consumes them.
+        """
+        L = 1 + self.k + N * V
+        m = torch.ones(L, L, dtype=torch.bool, device=dev)      # all forbidden
+        s0 = 1 + self.k
+        idx = torch.arange(N * V, device=dev)
+        patch = idx // V                                        # (N*V,)
+        m[s0:, s0:] = patch[None, :] > patch[:, None]           # future = True
+        m[s0:, 0] = False                                       # static is a key
+        m[0, 0] = False                                         # static: self only
+        m[1:s0, :] = False                                      # summaries read all
+        m[:, 1:s0] = True                                       # ...but are never read
+        m[1:s0, 1:s0] = False                                   # (keep rows legal)
+        return m
+
+    def forward(self, batch: dict, return_hidden: bool = False,
+                causal: bool = False) -> dict:
         a, x = batch["attrs"], batch["series"]
         vis, valid, doy = batch["vis"], batch["valid"], batch["doy"]
         B, N, V, _ = x.shape
         dev = x.device
 
         # ---- static token
-        st = self.static_mlp(a) + self.static_role                # (B, d)
+        av = batch.get("attr_vis")
+        if av is None:
+            av = torch.ones_like(a)
+        st = self.static_mlp(torch.cat([a * av, av], dim=-1)) + self.static_role
 
         # ---- series tokens: value (or [MASK]) + variable id + position + doy
         val = self.value_proj(x)                                  # (B,N,V,d)
@@ -135,12 +183,15 @@ class SiteEncoder(nn.Module):
             torch.ones(B, 1 + self.k, device=dev, dtype=torch.bool),
             valid.reshape(B, N * V).bool()], dim=1)
 
-        h = self.trunk(self.norm_in(seq), src_key_padding_mask=~pad)
+        attn_mask = self._causal_mask(N, V, dev) if causal else None
+        h = self.trunk(self.norm_in(seq), mask=attn_mask,
+                       src_key_padding_mask=~pad)
         t_static = h[:, :1]
         t_series = h[:, 1:1 + self.k]
         h_series = h[:, 1 + self.k:]
         recon = self.head(h_series).reshape(B, N, V, self.patch)
-        out = {"recon": recon, "t_static": t_static, "t_series": t_series}
+        out = {"recon": recon, "t_static": t_static, "t_series": t_series,
+               "attr_recon": self.attr_head(t_static.squeeze(1))}
         if return_hidden:
             # the connector's level-3 decoder needs the per-token stream, not
             # just the summaries -- local detail stays at the site

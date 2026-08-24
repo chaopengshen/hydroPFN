@@ -273,10 +273,10 @@ def build(out: Path) -> None:
     rows = [
         ["#", "token", "content", "role", "own?"],
         ["0", "[TASK]", "var-ID(log_d) + cov(log_Q=3.2) + MASK-value", "query", "own"],
-        ["1", "attr(query site)", "MLP(18 attributes)", "attribute", "own"],
+        ["1..a", "attr(query site)", "ONE TOKEN PER ATTRIBUTE: attr-ID emb + value", "attribute", "own"],
         ["2", "dem(query site)", "terrain encoder(128x128 patch)", "attribute", "own"],
         ["3..k", "visit(query site)", "var-ID(log_W) + value + cov(log_Q)", "observed", "own"],
-        ["k+1", "attr(context site 1)", "MLP(18 attributes)", "attribute", "context"],
+        ["k+1", "attr(context site 1)", "one token per attribute, same ID space", "attribute", "context"],
         ["k+2", "ts(context site 1)", "pooled patches + FDC quantiles", "attribute", "context"],
         ["k+3..", "visit(context site 1)", "var-ID + value + cov", "observed", "context"],
         ["...", "... x N context sites", "(retrieved: attribute / geographic nearest)", "", "context"],
@@ -614,6 +614,25 @@ def build(out: Path) -> None:
         "Compute gating (agreed): the 8xA100 machine is engaged only after the single-GPU gates confirm value. "
         "Total pretraining\ncost is academic-scale (~2–4 GPU-weeks single-GPU equivalent); the real cost is data "
         "engineering, measured in person-weeks.", 12.5, False, INK)
+
+    # ------------------------------------- design decisions, 2026-08-24
+    s = slide(prs, "Design decisions forced by measurement (2026-08-24)",
+              "Each was found by an experiment contradicting the design, not by reasoning about it")
+    rows = [
+        ["decision", "why", "evidence"],
+        ["Attributes: ONE TOKEN EACH, ID-addressed\n(was: all 26 through one MLP)", "extensible to new attributes; missing becomes an\nABSENT TOKEN, not a zero; individually maskable", "+13% tokens (196 -> 222). Global statics will be\nsparse and noisy, so absent must be first-class"],
+        ["The TASK DISTRIBUTION is the product,\nnot an implementation detail", "in-context learning works over DATA (unseen\nbasins) but NOT over TASKS", "self-as-context zero-shot 0.249 vs 0.698 control;\ntcross stays at random init if never exercised"],
+        ["Every conditional needs an ADEQUATE\nSHARE of training, not mere presence", "a pathway always available gets relied on; one\nthat is starved never forms at all", "K=0 at 1/6 of tasks: 0.658. K=0-only: 0.7164.\nSame default cost the DA task 0.17"],
+        ["Causal masking, always", "free, and makes the model a filter not a smoother\n-- required for any DA claim", "K=4: 0.837 -> 0.846; large-K decay also reduced"],
+        ["Geo-encoding on the TIME-ALIGNED path,\nnot the connector", "the connector carries almost no signal; context\nis actually mixed in tcross", "connector contributes 0.001. Moved: K=32 goes\n0.828 -> 0.846, flat from K=4 onward"],
+        ["Prefer DEM over curated statics\n(NOT YET IMPLEMENTED)", "curated attributes win in-distribution and fail\nglobally; DEM is the consistent input", "untested. Ablating statics at inference would\nmeasure the transfer risk directly"],
+    ]
+    table(s, 0.5, 1.25, 12.3, rows, [3.4, 4.5, 4.4], rh=0.62, size=9.5)
+    box(s, 0.5, 5.5, 12.3, 1.0, BG, ACC)
+    txt(s, 0.7, 5.62, 11.9, 0.85,
+        "One pattern behind all six: a capability the model is never asked for during pretraining does not exist at "
+        "inference,\nand one it is only occasionally asked for exists weakly. Scale (671 -> ~40,000 stations) "
+        "changes the budget, not this rule.", 12.5, False, INK)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out))
