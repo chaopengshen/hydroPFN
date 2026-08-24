@@ -53,7 +53,7 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
                ctx_start=None, latlon=None, self_da=0, mask_kind=None,
-               score_tail=0, attr_mask=0.0, self_ctx=0):
+               score_tail=0, attr_mask=0.0, self_ctx=0, area=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -197,6 +197,14 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     if latlon is not None:
         # site 0 is the query; the connector encodes displacement FROM it
         task["latlon"] = latlon[sites].astype(np.float32)
+    if area is not None:
+        # log AREA RATIO to the query. In log-discharge space donor transfer
+        # is additive: log Q_target ~= log Q_donor + log(A_target / A_donor),
+        # so handing the model this scalar makes the conventional scaling a
+        # linear correction it can apply, rather than something it must infer
+        # from two standardised attribute vectors.
+        a_ = np.clip(area[sites], 1e-3, None)
+        task["logarea"] = np.log(a_ / a_[0]).astype(np.float32)[:, None]
     return task, sites, sl
 
 
@@ -278,6 +286,7 @@ def main(a):
     # their records are available at inference. What must never be visible is
     # the QUERY's own streamflow, and it never is.
     ll = d["latlon"]
+    ar = d.get("area")
     # TWO geo rankings, and conflating them was a leak.
     #
     # TRAINING context must come from TRAINING basins only. Ranking over all
@@ -394,6 +403,7 @@ def main(a):
                                      geo_rank=geo_rank_train,
                                      start_hi=train_end_patch, ctx_start=cs,
                                      latlon=ll if a.geo else None,
+                                     area=ar if a.area_scale else None,
                                      # TRAINING tail length is RANDOM.
                                      # Fixing it at --self-da (=1) hides one
                                      # patch per task, so the model gets 32x
@@ -421,11 +431,27 @@ def main(a):
             rec = net(b, return_attrs=a.mask_attrs > 0)
             if a.mask_attrs > 0:
                 rec, attr_rec = rec
-            w = ((1 - b["vis"][:, 0]) * b["valid"][:, 0])[..., obs_col]
-            tgt = b["series"][:, 0][..., obs_col, :]
-            pred = rec[..., obs_col, :]
-            loss = (((pred - tgt) ** 2) * w.unsqueeze(-1)).sum() / \
+            # Score EVERY hidden-and-valid position on the query, across
+            # ALL variables. Restricting this to obs_col means a
+            # `whole_variable` or `random_span` mask landing on a FORCING
+            # produces no gradient at all, silently turning most of the
+            # mask mixture into noise. That was the state for every
+            # --mask-mix run up to 2026-08-24: the edit meant to fix it
+            # never matched, and the script printed success anyway.
+            w = (1 - b["vis"][:, 0]) * b["valid"][:, 0]        # (B,N,V)
+            tgt = b["series"][:, 0]                            # (B,N,V,p)
+            loss = (((rec - tgt) ** 2) * w.unsqueeze(-1)).sum() / \
                 w.sum().clamp(min=1.0)
+            if a.mask_attrs > 0:
+                # Cross-module term: reconstruct the HIDDEN attributes
+                # of the query from its static token, which has
+                # attended over the time series. Without this the
+                # attr_head gets no gradient at all -- the state of
+                # the A_attrs run, where it was computed and dropped.
+                aw = 1.0 - b["attr_vis"][:, 0]        # hidden attrs
+                loss = loss + a.attr_w * (
+                    ((attr_rec - b["attrs"][:, 0]) ** 2) * aw
+                ).sum() / aw.sum().clamp(min=1.0)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step(); sched.step()
@@ -468,7 +494,8 @@ def main(a):
                         Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
                         geo_rank=geo_rank, ctx_start=cs,
-                        latlon=ll if a.geo else None, self_da=a.self_da,
+                        latlon=ll if a.geo else None,
+                        area=ar if a.area_scale else None, self_da=a.self_da,
                         score_tail=a.score_tail, attr_mask=a.mask_attrs,
                         self_ctx=a.self_ctx)
                     csl = sl if cs is None else slice(cs, cs + a.win)
@@ -600,6 +627,9 @@ if __name__ == "__main__":
                          "patches. Tests whether a model trained only on "
                          "NEIGHBOUR context can assimilate its own gauge with "
                          "no retraining.")
+    ap.add_argument("--area-scale", action="store_true",
+                    help="give context tokens the log drainage-area RATIO to "
+                         "the query, the conventional donor-transfer scaling")
     ap.add_argument("--self-ctx-p", type=float, default=0.0, metavar="P",
                     help="TRAINING: probability of adding the query basin as "
                          "its own context entry, with a random masked tail")

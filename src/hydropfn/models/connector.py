@@ -167,6 +167,9 @@ class PUBModel(nn.Module):
         # is the real fix and is not available yet.
         self.dbias = nn.Sequential(
             nn.Linear(9, 32), nn.GELU(), nn.Linear(32, heads)) if geo else None
+        # log area ratio -> a shift on the context token. Cheap: one scalar in.
+        self.area_proj = nn.Sequential(nn.Linear(1, 32), nn.GELU(),
+                                       nn.Linear(32, d))
         if time_aligned:
             self.tcross = nn.MultiheadAttention(d, heads, batch_first=True)
             self.norm_tq = nn.LayerNorm(d)
@@ -210,6 +213,9 @@ class PUBModel(nn.Module):
             hc = h[:, 1:]
             if self.tgeo is not None and batch.get("latlon") is not None:
                 hc = hc + self.tgeo(batch["latlon"])[:, 1:, None, None, :]
+            if self.area_proj is not None and batch.get("logarea") is not None:
+                hc = hc + self.area_proj(
+                    batch["logarea"])[:, 1:, None, None, :]
             ks = hc.permute(0, 2, 1, 3, 4).reshape(B * N, (S - 1) * V, d)
             abias = None
             if self.dbias is not None and batch.get("latlon") is not None:
