@@ -246,3 +246,41 @@ the de-location caveats recorded in the proposal.
   psd_ratio, larger than the effect being claimed.
 - A metric gets exercised on a known input before any table built from it is
   believed.
+
+---
+
+## Attribute ingestion — revised 2026-08-24
+
+**Was:** all `n_attr` attributes concatenated with a visibility indicator and
+pushed through `Linear(2*n_attr -> d)` into a **single** static token.
+
+**Now specified:** **one token per attribute**, carrying an attribute-ID
+embedding plus its value — exactly the treatment series variables already get
+via `var_emb`. Cost is +13% tokens (196 -> 222).
+
+Three reasons, all of which bite at global scale rather than on CAMELS:
+
+1. **Extensibility.** A fixed-width MLP means adding a DEM descriptor or a soil
+   variable changes `n_attr`, invalidating the input layer and every existing
+   checkpoint. ID-addressed attributes make a new attribute a new ID.
+2. **Absent must be a first-class object.** With ~40,000 global stations, many
+   curated attributes will be missing or unreliable. Today `attr_vis` masks
+   *values inside* a token; a missing attribute should instead be an **absent
+   token**, the same object as an absent series variable. Anything else
+   re-introduces the absent/zero conflation this design forbids everywhere else.
+3. **Individual addressability.** Attention cannot currently weight lithology
+   separately from aridity — the MLP pre-mixes them. Per-attribute tokens make
+   attribute masking identical to variable masking, which is what lets
+   attribute reconstruction (time series -> statics) become a real pretraining
+   task rather than a bolt-on head.
+
+**Not a separate module.** The right change is to extend the existing
+tokenisation to statics, not to add a parallel attribute encoder.
+
+### Open: should DEM features be preferentially used?
+
+Curated statics will beat DEM-derived features in-distribution and fail out of
+it. Untested candidate mechanisms: reliability-weighted attribute dropout;
+masking whole attribute *groups* so the DEM pathway must carry those draws;
+and — first — simply ablating curated statics at inference to measure the
+dependence, since that drop **is** the transfer risk.

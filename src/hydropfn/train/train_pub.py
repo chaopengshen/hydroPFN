@@ -53,7 +53,7 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
                ctx_start=None, latlon=None, self_da=0, mask_kind=None,
-               score_tail=0, attr_mask=0.0):
+               score_tail=0, attr_mask=0.0, self_ctx=0):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -144,6 +144,25 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     # nn_donor/ctx_mean the neighbours' CONCURRENT discharge -- exactly the
     # information mode B withholds from the model. The tell: the baseline
     # columns were byte-identical between the mode A and mode B result files.
+    if self_ctx:
+        # THE QUERY BASIN, ADDED AS ITS OWN CONTEXT ENTRY.
+        # Routes the site's recent record through the CROSS-SITE attention
+        # already trained on neighbours, instead of through the query's own
+        # self-attention (which is what --self-da does and which needed a
+        # dedicated training mode). "Self at displacement 0" is then just an
+        # ordinary context draw, so a model trained ONLY on neighbour context
+        # may be able to assimilate its own gauge zero-shot. That is the
+        # difference between in-context learning over DATA and over TASKS.
+        #
+        # Its discharge is visible only BEFORE the scored tail -- otherwise
+        # this hands over the answer.
+        ser = np.concatenate([ser[:1], ser[:1], ser[1:]], 0)
+        val = np.concatenate([val[:1], val[:1], val[1:]], 0)
+        dd = np.concatenate([dd[:1], dd[:1], dd[1:]], 0)
+        sites = np.concatenate([sites[:1], sites[:1], sites[1:]])
+        vis = np.concatenate([vis[:1], np.ones_like(vis[:1]), vis[1:]], 0)
+        vis[1, -self_ctx:, obs_col] = 0.0        # hide the target from it
+        S += 1
     task = {"attrs": A[sites], "series": ser, "vis": vis, "valid": val,
             "doy": dd, "site_valid": np.ones(S, np.float32)}
     # Attribute masking applies to the QUERY only. Context sites keep their
@@ -350,10 +369,19 @@ def main(a):
     k_train = [int(x) for x in a.k_train.split(",")]
 
     t0 = time.time()
+    if a.load:
+        net.load_state_dict(torch.load(a.load, map_location=DEVICE)["net"])
+        print(f"  LOADED {a.load} -- skipping training", flush=True)
+        a.epochs = 0
     for ep in range(a.epochs):
         net.train(); tot = 0.0
         for _ in range(a.steps):
             K = int(rng.choice(k_train))     # RANDOMISED context size
+            # Drawn ONCE PER STEP, not per task: self-as-context adds a site,
+            # so a per-task draw makes S vary inside the batch and collate's
+            # np.stack fails on ragged shapes.
+            step_self_ctx = (int(rng.integers(1, a.win // 2))
+                             if rng.random() < a.self_ctx_p else 0)
             tasks = []
             for _ in range(a.batch):
                 q = int(rng.choice(tr))
@@ -379,6 +407,11 @@ def main(a):
                                      # fixed --self-da tail.
                                      self_da=(int(rng.integers(1, a.win // 2))
                                               if a.self_da else 0),
+                                     # self-as-context appears with prob
+                                     # --self-ctx-p, so displacement-0 context
+                                     # with a masked tail becomes an ordinary
+                                     # DRAW rather than an unseen mode
+                                     self_ctx=step_self_ctx,
                                      score_tail=a.score_tail,
                                      attr_mask=a.mask_attrs,
                                      mask_kind=(str(rng.choice(MASK_KINDS))
@@ -436,14 +469,19 @@ def main(a):
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
                         geo_rank=geo_rank, ctx_start=cs,
                         latlon=ll if a.geo else None, self_da=a.self_da,
-                        score_tail=a.score_tail, attr_mask=a.mask_attrs)
+                        score_tail=a.score_tail, attr_mask=a.mask_attrs,
+                        self_ctx=a.self_ctx)
                     csl = sl if cs is None else slice(cs, cs + a.win)
                     tasks.append(t)
-                    metas.append((int(q), sites, sl, csl, t["_score"]))
+                    # b0: first REAL neighbour. With --self-ctx the query
+                    # basin occupies slot 1, and letting the baselines read it
+                    # makes nn_donor 1.0000 -- it copies the target.
+                    metas.append((int(q), sites, sl, csl, t["_score"],
+                                  2 if a.self_ctx else 1))
                 b = collate(tasks)
                 with torch.no_grad():
                     rec = net(b)
-                for j, (q, sites, sl, csl, sc) in enumerate(metas):
+                for j, (q, sites, sl, csl, sc, b0) in enumerate(metas):
                     d = acc[q]
                     # score ONLY the patches that were hidden from the query
                     d["y"].append(Xp[sites[0], sl][sc][..., obs_col, :].ravel())
@@ -454,8 +492,8 @@ def main(a):
                         # nothing changes; in mode B this is what stops the
                         # baselines from reading the future.
                         d["nn"].append(
-                            Xp[sites[1], csl][sc][..., obs_col, :].ravel())
-                        d["cm"].append(Xp[sites[1:], csl][:, sc][..., obs_col, :]
+                            Xp[sites[b0], csl][sc][..., obs_col, :].ravel())
+                        d["cm"].append(Xp[sites[b0:], csl][:, sc][..., obs_col, :]
                                        .mean(0).ravel())
                         # PROPER SPATIAL-INTERPOLATION BASELINE. ctx_mean
                         # weights every donor equally, which is a weak
@@ -464,13 +502,13 @@ def main(a):
                         # concurrent neighbour discharge approaches our score,
                         # then the model is an expensive kriging and the
                         # in-context machinery is not earning its keep.
-                        dd_ = ll[sites[1:]] - ll[sites[0]]
+                        dd_ = ll[sites[b0:]] - ll[sites[0]]
                         dd_ = np.sqrt((dd_[:, 0]) ** 2 +
                                       (dd_[:, 1] * 0.766) ** 2)
                         wt = 1.0 / (dd_ ** 2 + 1e-3)
                         wt = (wt / wt.sum()).astype(np.float32)
                         d["idw"].append(
-                            (Xp[sites[1:], csl][:, sc][..., obs_col, :]
+                            (Xp[sites[b0:], csl][:, sc][..., obs_col, :]
                              * wt[:, None, None]).sum(0).ravel())
         order = [int(q) for q in te]
         ys = [np.concatenate(acc[q]["y"]) for q in order]
@@ -556,6 +594,17 @@ if __name__ == "__main__":
                     help="training windows must start before this DAY. "
                          "Without it there is no temporal split and period "
                          "memorisation is uncontrolled -- see Diagnosis.md")
+    ap.add_argument("--self-ctx", type=int, default=0, metavar="P",
+                    help="EVAL ONLY: add the query basin itself as a context "
+                         "entry, its discharge visible except the last P "
+                         "patches. Tests whether a model trained only on "
+                         "NEIGHBOUR context can assimilate its own gauge with "
+                         "no retraining.")
+    ap.add_argument("--self-ctx-p", type=float, default=0.0, metavar="P",
+                    help="TRAINING: probability of adding the query basin as "
+                         "its own context entry, with a random masked tail")
+    ap.add_argument("--load", default=None,
+                    help="evaluate this checkpoint instead of training")
     ap.add_argument("--score-tail", type=int, default=0, metavar="P",
                     help="score ONLY the last P patches, whatever the mask. "
                          "Use with --roll to put the gauged (--self-da) and "
