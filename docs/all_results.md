@@ -1,5 +1,62 @@
 # Every number, one table, with its protocol
 
+**This page is the single source of truth for results.** The README links here
+and does not restate numbers; anything quoted elsewhere that disagrees with
+this page is stale.
+
+---
+
+## Highlights — the conclusions worth remembering
+
+1. **Nothing is zero-shot.** A capability absent from the pretraining task
+   distribution does not exist at inference. Self-as-context: **0.249**
+   untrained, **0.788** once trained as a draw. Verified mechanically too — in
+   a K=0-only checkpoint the cross-site attention weights sit at their random
+   init to five decimals, because that branch never executed.
+
+2. **Presence is not enough; SHARE matters.** K=0 at 1/6 of tasks gives 0.658;
+   K=0 upweighted gives 0.7164 and ties an LSTM. The same default cost the
+   1-day assimilation task **0.17**. A pathway that is always available in
+   training gets relied on; one that is starved never forms.
+
+3. **Untrained input configurations actively HURT.** Hiding all discharge
+   scores 0.851, hiding only a span 0.728, hiding only the tail 0.551 —
+   strictly *more* visible data, monotonically worse, because partial
+   visibility of the query's own discharge was never trained.
+
+4. **Route matters, and it splits by whose data it is.** For a site's **own**
+   lagged record, feeding it through that site's own token stream (`--self-da`,
+   **0.8765**) beats routing it through cross-site attention (`--self-ctx`,
+   **0.7202**) at matched resolution. For **other sites'** data, cross-site
+   attention is the only route — and it works, worth **+0.39**. So: own data
+   down the site's own stream; neighbours through cross-attention.
+
+5. **In-context reading of a gauge does NOT beat training on that gauge.** It
+   recovers about **64%** of the benefit (+0.080 vs +0.125 over having nothing).
+   What beats training on the gauge is adding **neighbours** — concurrent
+   observations elsewhere are information no amount of training on the target
+   can supply.
+
+6. **The margin over honest spatial interpolation is +0.033, not +0.08.**
+   Inverse-distance weighting reaches 0.8390 against our 0.8724. `nn_donor`
+   (single donor) and `ctx_mean` (uniform mean) are strawmen.
+
+7. **Data latency degrades gracefully**: −0.028 over an eightfold increase in
+   staleness. A record four months old still beats having none. Because
+   staleness was a training draw.
+
+8. **Causality is free** (0.837 → 0.846) — so the model can be a filter rather
+   than a smoother at no cost. **Geo-encoding helps only on the path that
+   actually mixes context**; on the near-dead connector it was worth 0.003.
+   Neither a variogram attention bias nor drainage-area scaling helped, which
+   points at **Euclidean distance being the wrong metric** — the case for
+   flow-network distance from the DEM arm.
+
+9. **Compare only within a protocol.** Five wrong conclusions in this project
+   came from comparing across them; the list is at the bottom of this page.
+
+---
+
 Numbers in this project have been quoted across four different protocols, and
 comparing across them has produced wrong conclusions more than once. This page
 exists so that never happens again: **every result, with the protocol column
@@ -199,3 +256,33 @@ Each of these produced a wrong conclusion that survived until someone checked:
    patch size also differed.
 5. **Weak baselines.** `nn_donor` (single donor) and `ctx_mean` (uniform mean)
    flattered us by ~0.03 relative to inverse-distance weighting.
+
+
+---
+
+## Other units (not the time-series arm)
+
+These measure different things and live on their own protocols.
+
+### DEM sampler (Objective B)
+
+60 held-out 1° tiles, K=8 draws, success bands fixed before running. A
+deterministic net is capped at ~0.31 of true fine-scale spectral power, and the
+cap is *structural*: an L1/L2 loss returns the conditional mean and the mean of
+plausible terrains is smooth. Final recipe = residual parameterisation +
+best-of-K reranking. Detail in the README's Result 1.
+
+### Measurement PFN (unit D)
+
+A site's own past measurements, read in context, beat a hand-engineered
+"deviation from attribute prediction" feature fed to a random forest:
+**+0.127 R²** cross-variable against +0.041. 9/9 across regions and seeds.
+Detail in the README's Result 2.
+
+### SUPERSEDED
+
+The README's **Result 3** (mask-mode table) and **Result 4** (ceiling 0.8606 /
+ours 0.8447) predate the 2026-08-24 scoring correction and **should not be
+quoted**. Result 4 in particular compared a 16-day-mean LSTM number against our
+daily number; corrected, the gauged ceiling is 0.8477 and we reach 0.8816 with
+neighbours (protocol B above).

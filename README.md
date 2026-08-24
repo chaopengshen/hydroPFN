@@ -137,129 +137,20 @@ cause; randomising it is the untested fix.
 
 ---
 
-## Result 3 — the merged site encoder, on real CAMELS
+## Results 3 and 4 — SUPERSEDED, see docs/all_results.md
 
-CAMELS_Frederik.nc: **671 basins x 12,784 days (1980-2014)**, 26 static
-attributes, daymet forcings, no missing values. Leave-region-out by USGS
-drainage-basin code — regions 01, 11, 17 held out, **124 basins the model never
-saw**. Streamflow is log1p'd and reconstructed in 16-day patches.
+These two sections previously carried a mask-mode table and a ceiling
+comparison (ceiling 0.8606 / ours 0.8447). **Both predate the 2026-08-24
+scoring correction and are wrong**: they compared a 16-day-mean LSTM number
+against our daily number, which is worth +0.023 on its own.
 
-| mask (= inference mode) | model | no attrs | attr gain | climate gain | **physical gain** | climatology | persistence |
-|---|---|---|---|---|---|---|---|
-| random span (gap filling) | 0.606 | 0.565 | +0.042 | +0.002 | −0.041 | −0.000 | −0.008 |
-| causal tail (forecasting) | 0.802 | 0.642 | +0.160 | +0.017 | **+0.089** | −0.053 | −0.635 |
-| whole variable (cross-var) | 0.822 | 0.627 | +0.195 | +0.072 | **+0.094** | −0.006 | −0.380 |
-| **whole site (PUB)** | **0.769** | 0.561 | +0.208 | +0.042 | **+0.116** | −0.043 | −0.977 |
+Corrected, on a matched protocol: the gauged ceiling is **0.8477**, reading a
+gauge's own record as context gives **0.8026**, and adding neighbours gives
+**0.8816**.
 
-**Whole-site is the mode this design exists for** — every observation hidden,
-in a region never seen — and it reaches R² 0.769 from forcings and attributes
-alone.
-
-**The split ablation is what makes the attribute result meaningful.** CAMELS
-ships `p_mean`, `pet_mean`, `aridity`, `frac_snow` and the precipitation
-frequency/duration terms — all aggregates of the forcing series the model
-already reads. Handing those over is not new information. Splitting the
-ablation shows the gain comes from the **physical** half (soils, geology,
-slope, area: +0.089 to +0.116), which *exceeds* the climate half (+0.017 to
-+0.072). Without that split, `attr_gain` of +0.21 would have read as proof of
-catchment learning when it might have been the model reading a summary of its
-own input — the same trap as the `W·d·v = Q` identity, caught before it was
-claimed.
-
-Two things stated plainly:
-
-- **This has NOT passed its U3 gate.** The build plan requires beating a
-  **regional LSTM**; that has not been run. Climatology (≈0) and persistence
-  (negative) are weak baselines and the bar here was low.
-- On `random span`, `physical gain` is **negative** (−0.041): when surrounding
-  streamflow is visible, physical attributes slightly hurt. That row's n is
-  also only 1,712, because the random-span mask picks a channel at random and
-  lands on `QObs` about one time in six.
-
-A synthetic rainfall-runoff generator (`data/forcing.py:synthetic`) reaches R²
-0.97–0.99 with attribute gains of 0.40–0.71. That is a **machinery test only** —
-the generator was written here, so the model recovering it is close to
-circular. It is retained because it makes the ablation demonstrably sensitive,
-and because it exposed one way synthetic data misleads: persistence dominated
-there and is strongly negative on real CAMELS.
-
----
-
-## Result 4 — prediction in ungauged basins, from context alone
-
-**Temporal split, three arms, all trained on 1980–2004 and evaluated in April
-2006 with a 608-day gap:**
-
-| arm | R² |
-|---|---|
-| regional LSTM **with the test gauges in training** (the ceiling) | **0.8606** |
-| **ours — never sees the query gauge** | **0.8447** |
-| regional LSTM without the test gauges (standard PUB) | 0.7553 |
-
-> **Conditioning on nearby gauges recovers 85% of the value of actually having
-> the gauge** (0.0894 of a 0.1053 gap), for a basin never gauged, in a region
-> never trained on, in a period never trained on.
-
-We land *below* the ceiling, as physics requires. The temporal split costs us
-0.008 and the LSTM control 0.007 — so the result is **not** period
-memorisation.
-
-The load-bearing claim. A query basin in a **region the model never trained
-on**, with **every streamflow observation hidden**, predicted by conditioning
-on K nearby gauged basins at inference — no retraining.
-
-All at the same holdout, same window, same target:
-
-| model | median of 3 seeds | spread |
-|---|---|---|
-| **with K=4 nearby gauges** | **0.8528** | 0.008 |
-| unit A standalone (no context capability) | 0.7782 | 0.016 |
-| regional LSTM | 0.7625 | 0.014 |
-| donor-averaging (`ctx_mean`, K=4) | 0.8293 | — |
-| nearest-neighbour donor | 0.7850 | — |
-
-**Context is worth +0.075 over a well-trained no-context model and +0.090 over
-a regional LSTM** (worst-case across seeds: +0.065 and +0.090), and it beats
-donor-averaging — the method operational PUB actually uses — at every K.
-
-Unit A standalone and the LSTM are a **tie** (+0.016, inside both spreads), so
-essentially all of the advantage over the field's workhorse comes from the one
-thing an LSTM structurally cannot do: read neighbouring gauges at inference.
-
-> An earlier version of this README claimed **+0.38** from context. That
-> compared against the PUB model's own K=0 mode (0.4714), which is *damaged*:
-> the same encoder reaches 0.7879 trained without context machinery. The
-> correct comparison is against a competent no-context model. **Do not use the
-> +0.38 figure.**
-
-**The two-path design costs something real**: adding context capability drops
-the no-context mode from 0.7879 to 0.5259. Ship the PUB model where neighbours
-exist and unit A where they do not.
-
-Two findings behind it, both the product of being wrong first:
-
-- **Neighbours, not lookalikes.** Attribute-similar basins on the far side of
-  the continent see different weather on the same day and are worth nothing
-  (+0.0000). Basins ~32 km away share storms and are worth +0.38.
-- **Pooled summaries destroy the signal.** Letting each query patch attend to
-  context patches at the SAME time position took the model from 0.556 to 0.853
-  with nothing else changed. The connector's time-pooled tokens are right for
-  transferring basin character and wrong for transferring today's weather.
-
-**Versus a regional LSTM** (the field's workhorse, same basins, same 16-day
-patch scoring): we win with context — 0.853 vs 0.750 and 0.728 vs 0.707. The
-PUB model's K=0 mode looks weak (0.36–0.47) but that is a training-allocation
-artefact: K=0 gets one step in six. Unit A trained standalone reaches **0.7631,
-beating the LSTM's 0.7498** on the same split. We do use 24× the LSTM's
-parameters. See `docs/pub_test_plan.md`.
-
-**Replicated** over 3 seeds (peak spread 0.008) and a second region set: gain
-+0.368 to +0.401, beating donor-averaging in 4/4 runs at every K. The second
-region set is harder in absolute terms (peak 0.728) yet the gain is identical
-and the margins larger — the effect belongs to the method, not to easy basins.
-
-See `docs/pub_test_plan.md`, including the two mis-specified tests that came
-first.
+**All current results live in [docs/all_results.md](docs/all_results.md)**,
+with a protocol column and a highlights section. Nothing is restated here, so
+there is one source of truth rather than two.
 
 ## Layout
 
@@ -429,132 +320,13 @@ different period, window-length draws, realistic gap patterns, and K up to
 
 ---
 
-## Results by task
+## Results
 
-> **[docs/all_results.md](docs/all_results.md) — every number in one
-> table with its protocol column.** Numbers here span four protocols and
-> comparing across them has produced wrong conclusions repeatedly; that
-> page states which rows may be compared.
->
-> Full benchmark detail — the reference results we compare to (with
-> their protocols), the exact command behind every number, and how to
-> verify the train/test split — is in **[docs/benchmarks.md](docs/benchmarks.md)**.
->
-> Verify the split before trusting any number:
-> `python scripts/verify_split.py --nc data/CAMELS_Frederik.nc`
+**[docs/all_results.md](docs/all_results.md)** — every number with its
+protocol, plus a highlights section of the conclusions worth
+remembering. **[docs/benchmarks.md](docs/benchmarks.md)** — the
+reference results we compare against, the command behind each number,
+and how to verify the split.
 
-All numbers are **median per-basin NSE**. **Protocols differ between blocks and
-are not cross-comparable.**
-
-### The split: PUR, not random holdout
-
-Held-out set is defined by **USGS HUC2 region code** (`station_id[:2]`), and
-regions `01` (New England), `11` (Arkansas–White–Red) and `17` (Pacific
-Northwest) are removed **entirely** — 124 query basins, 547 training basins.
-This is Prediction in Ungauged *Regions*, not random k-fold basin holdout:
-
-```
-held-out query -> nearest TRAINING basin: median 1.73 deg  (~190 km)
-                  nearest ANY basin:      median 0.29 deg
-```
-
-Random holdout would put a training basin ~0.3° away. Two consequences worth
-stating precisely:
-
-- The **model** is trained PUR — it has never seen these regions.
-- At inference, `--context-pool all` lets context come from other held-out
-  basins ~0.29° away. Those are gauges the model never trained on, so this is
-  not a leak, but the setting is *"ungauged basin in an ungauged region, with
-  nearby gauges that were never used for training"* — not *"no gauges exist"*.
-  At K=0 it is pure PUR.
-
-Temporal split throughout: train windows end day 9000, evaluation at day 9600.
-
-### Task 1 — forward run (no discharge anywhere)
-*512-day window, all patches scored*
-
-| | NSE |
-|---|---|
-| regional LSTM (our bar, same split) | 0.7173 |
-| **ours, one checkpoint** | **0.7268** |
-| ours, forward specialist (3 seeds) | 0.7164 / 0.7208 / 0.7321 |
-| *Jamaat 2025, δHBV no DA* — **gauged basins** | *0.75* |
-| *Jamaat 2025, LSTM no DA* — **gauged basins** | *0.74* |
-
-A tie with the LSTM on an identical split. The italic rows are on basins that
-were **in training**; ours are not, so those are context, not a ranking.
-
-### Task 2 — self t−1 (own gauge, no neighbours)
-*patch=1, 64-day window, true 1-day lead, 200 rolling origins*
-
-| | NSE |
-|---|---|
-| **ours** | **0.8765** |
-| *Jamaat 2025, variational DA* — **gauged** | *0.82* |
-| *Yang 2026, h-Diffusion + inpainting DA (hourly)* — **gauged** | *0.832* |
-| ours, 180-day window | 0.8674 |
-
-Ours is a **single forward pass with no optimisation at inference**; variational
-DA solves an optimisation per assimilation step.
-
-### Task 3 — neighbours up to t (concurrent)
-*16-day tail, 40 rolling origins*
-
-| | NSE |
-|---|---|
-| **ours, K=8 + self-context** | **0.8822** |
-| ours, K=8 | 0.8724 |
-| ours + mask mixture (4 conditionals) | 0.8689 |
-| ours + variogram attention bias | 0.8697 |
-| ours + drainage-area scaling | 0.8633 |
-| **IDW kriging — the honest baseline** | **0.8390** |
-| `ctx_mean` / `nn_donor` — weak baselines | 0.8306 / 0.7906 |
-| gauged-ceiling LSTM (test gauge in training) | 0.8127 |
-
-Margin over real spatial interpolation is **+0.033**, not the +0.065 against
-the weak baselines. Neither the variogram bias nor area scaling helped;
-both refine a **Euclidean** metric, which is likely the binding constraint —
-flow-network distance from the DEM arm is the untested idea with headroom.
-
-### Task 4 — other conditionals (mask mixture)
-*K=4; "before" = a checkpoint trained without the mixture*
-
-| conditional | on QObs | on precipitation |
-|---|---|---|
-| `random_span` (gap filling) | 0.7279 → **0.8112** | 0.0539 → **0.9372** |
-| `whole_variable` (cross-variable) | 0.8512 → 0.8598 | 0.0503 → **0.9308** |
-| `causal_tail` (forecasting) | 0.5512 → **0.7491** | −0.0779 → **0.8684** |
-
-Cost of the mixture on Task 3: **0.004**. Caveat: context sites are fully
-visible, so their precipitation is in view — much of the precipitation result
-is likely spatial interpolation rather than inference from the query's own
-discharge. The K=0 version of that test has not been run.
-
-### One model, or several?
-
-**One checkpoint covers Tasks 1, 3 and 4** — forward, neighbour assimilation,
-self-assimilation, gap-filling, cross-variable and forecasting — selected
-purely by what context is supplied at run time. Nothing is reconfigured.
-
-**Task 2 is reachable from the shared weights after all.** The head emits
-`patch` daily values per token, so a `patch=16` model already produces a
-1-day-ahead prediction — the 16-day framing was a *scoring* choice, not an
-architectural limit. Reading `Z_trained2` at lead 1 with near-real-time data
-supplied through self-context:
-
-| lead | K=0 (self only) | K=4 (self + neighbours) |
-|---|---|---|
-| **1 day** | **0.8131** | **0.8959** |
-| 2 days | 0.8117 | 0.8906 |
-| 4 days | 0.7756 | 0.8854 |
-| 8 days | 0.8184 | 0.9005 |
-| 16 days | 0.8086 | 0.8936 |
-
-At K=0 — the Jamaat-comparable arm — that is 0.8131 against their 0.82.
-The separate `patch=1` specialist still reaches 0.8765, so unifying costs
-~0.064 on this task.
-
-**Note these are NOT comparable to the Task 3 numbers above**: they score only
-lead day 1, while Task 3 scores all 16 days of the patch. The all-days number
-from the same run is 0.8816, matching Task 3's 0.8822. See
-[docs/benchmarks.md](docs/benchmarks.md) for the full reconciliation.
+Verify the split before trusting any number:
+`python scripts/verify_split.py --nc data/CAMELS_Frederik.nc`
