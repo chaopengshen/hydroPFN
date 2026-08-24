@@ -426,3 +426,105 @@ the query, cross-site cross-variable transfer, modality dropout, context from a
 different period, window-length draws, realistic gap patterns, and K up to
 20–50 with mixed entry types — are enumerated with rationale in
 `dem_foundation/docs/dev_dem.md`.
+
+---
+
+## Results by task
+
+All numbers are **median per-basin NSE**. **Protocols differ between blocks and
+are not cross-comparable.**
+
+### The split: PUR, not random holdout
+
+Held-out set is defined by **USGS HUC2 region code** (`station_id[:2]`), and
+regions `01` (New England), `11` (Arkansas–White–Red) and `17` (Pacific
+Northwest) are removed **entirely** — 124 query basins, 547 training basins.
+This is Prediction in Ungauged *Regions*, not random k-fold basin holdout:
+
+```
+held-out query -> nearest TRAINING basin: median 1.73 deg  (~190 km)
+                  nearest ANY basin:      median 0.29 deg
+```
+
+Random holdout would put a training basin ~0.3° away. Two consequences worth
+stating precisely:
+
+- The **model** is trained PUR — it has never seen these regions.
+- At inference, `--context-pool all` lets context come from other held-out
+  basins ~0.29° away. Those are gauges the model never trained on, so this is
+  not a leak, but the setting is *"ungauged basin in an ungauged region, with
+  nearby gauges that were never used for training"* — not *"no gauges exist"*.
+  At K=0 it is pure PUR.
+
+Temporal split throughout: train windows end day 9000, evaluation at day 9600.
+
+### Task 1 — forward run (no discharge anywhere)
+*512-day window, all patches scored*
+
+| | NSE |
+|---|---|
+| regional LSTM (our bar, same split) | 0.7173 |
+| **ours, one checkpoint** | **0.7268** |
+| ours, forward specialist (3 seeds) | 0.7164 / 0.7208 / 0.7321 |
+| *Jamaat 2025, δHBV no DA* — **gauged basins** | *0.75* |
+| *Jamaat 2025, LSTM no DA* — **gauged basins** | *0.74* |
+
+A tie with the LSTM on an identical split. The italic rows are on basins that
+were **in training**; ours are not, so those are context, not a ranking.
+
+### Task 2 — self t−1 (own gauge, no neighbours)
+*patch=1, 64-day window, true 1-day lead, 200 rolling origins*
+
+| | NSE |
+|---|---|
+| **ours** | **0.8765** |
+| *Jamaat 2025, variational DA* — **gauged** | *0.82* |
+| *Yang 2026, h-Diffusion + inpainting DA (hourly)* — **gauged** | *0.832* |
+| ours, 180-day window | 0.8674 |
+
+Ours is a **single forward pass with no optimisation at inference**; variational
+DA solves an optimisation per assimilation step.
+
+### Task 3 — neighbours up to t (concurrent)
+*16-day tail, 40 rolling origins*
+
+| | NSE |
+|---|---|
+| **ours, K=8 + self-context** | **0.8822** |
+| ours, K=8 | 0.8724 |
+| ours + mask mixture (4 conditionals) | 0.8689 |
+| ours + variogram attention bias | 0.8697 |
+| ours + drainage-area scaling | 0.8633 |
+| **IDW kriging — the honest baseline** | **0.8390** |
+| `ctx_mean` / `nn_donor` — weak baselines | 0.8306 / 0.7906 |
+| gauged-ceiling LSTM (test gauge in training) | 0.8127 |
+
+Margin over real spatial interpolation is **+0.033**, not the +0.065 against
+the weak baselines. Neither the variogram bias nor area scaling helped;
+both refine a **Euclidean** metric, which is likely the binding constraint —
+flow-network distance from the DEM arm is the untested idea with headroom.
+
+### Task 4 — other conditionals (mask mixture)
+*K=4; "before" = a checkpoint trained without the mixture*
+
+| conditional | on QObs | on precipitation |
+|---|---|---|
+| `random_span` (gap filling) | 0.7279 → **0.8112** | 0.0539 → **0.9372** |
+| `whole_variable` (cross-variable) | 0.8512 → 0.8598 | 0.0503 → **0.9308** |
+| `causal_tail` (forecasting) | 0.5512 → **0.7491** | −0.0779 → **0.8684** |
+
+Cost of the mixture on Task 3: **0.004**. Caveat: context sites are fully
+visible, so their precipitation is in view — much of the precipitation result
+is likely spatial interpolation rather than inference from the query's own
+discharge. The K=0 version of that test has not been run.
+
+### One model, or several?
+
+**One checkpoint covers Tasks 1, 3 and 4** — forward, neighbour assimilation,
+self-assimilation, gap-filling, cross-variable and forecasting — selected
+purely by what context is supplied at run time. Nothing is reconfigured.
+
+**Task 2 is a different model.** It uses `patch=1, win=64` against `patch=16,
+win=32` elsewhere, so the 1-day-lead number does not come from the same
+weights. A single model spanning both would need variable patch size or
+patch=1 with long windows; untested.
