@@ -168,46 +168,76 @@ def main(a):
 
     # ---- evaluate on the SAME window the PUB runs use, aggregated to patches
     net.eval()
+    # ROLLING TAIL, to match train_pub.py --score-tail 1 --roll N.
+    # Needed so the GAUGED-CEILING arm (test gauge in training) can be
+    # compared against the in-context arm (never trained on the gauge,
+    # but reads its recent record at inference) on an identical target.
+    # Comparing a full-window number against a tail-scored one is the
+    # mistake that made a 16-day mean look like a daily R2.
     s0 = a.eval_start * a.patch
     ys, ps = [], []
+    origins = [s0 + r * a.patch for r in range(a.roll)]
+    # Accumulate PER BASIN so rolling origins concatenate in order.
+    # Concatenating across origins and basins together would destroy basin
+    # identity and make per-basin NSE meaningless.
+    acc = {int(bb): {"y": [], "p": []} for bb in te}
+    tail = a.score_tail * a.patch
     with torch.no_grad():
-        for i in range(0, len(te), 64):
-            b = te[i:i + 64]
-            x = torch.tensor(forc[b, s0:s0 + seq], device=DEVICE)
-            y = q[b, s0:s0 + seq]
-            aa = torch.tensor(As[b], device=DEVICE)
-            p = net(x, aa).cpu().numpy()
-            # Keep DAILY values and aggregate at scoring time, so BOTH
-            # resolutions get reported. The previous version scored only
-            # 16-day means while train_pub.py scored daily values, under a
-            # comment claiming the two matched. They did not, and aggregation
-            # generally raises R2, so those numbers were never comparable.
-            ys.append(y)
-            ps.append(p)
-    y = np.concatenate(ys); p = np.concatenate(ps)
+        for st in origins:
+            for i in range(0, len(te), 64):
+                b = te[i:i + 64]
+                x = torch.tensor(forc[b, st:st + seq], device=DEVICE)
+                yy = q[b, st:st + seq]
+                aa = torch.tensor(As[b], device=DEVICE)
+                pp = net(x, aa).cpu().numpy()
+                if tail:
+                    yy, pp = yy[:, -tail:], pp[:, -tail:]
+                for j, bb in enumerate(b):
+                    acc[int(bb)]["y"].append(yy[j])
+                    acc[int(bb)]["p"].append(pp[j])
+    order = [int(bb) for bb in te]
+    ys = [np.concatenate(acc[bb]["y"]) for bb in order]
+    ps = [np.concatenate(acc[bb]["p"]) for bb in order]
+    y = np.stack(ys); p = np.stack(ps)
 
     def _r2(u, v):
         u, v = u.ravel(), v.ravel()
         return float(1 - ((u - v) ** 2).sum() / ((u - u.mean()) ** 2).sum())
 
     # Median per-basin NSE -- the metric the hydrology literature reports,
-    # and NOT the same quantity as the pooled R2 below. See nse_per_site in
-    # train_pub.py for why pooling inflates the score.
+    # and NOT the same quantity as the pooled R2. Pooling concatenates
+    # basins and subtracts one global mean, so between-basin flow variance
+    # lands in the denominator and inflates the score.
     den = ((y - y.mean(1, keepdims=True)) ** 2).sum(1)
     nse = 1 - ((y - p) ** 2).sum(1) / np.where(den > 0, den, np.nan)
     nse = nse[np.isfinite(nse)]
     nse_med, nse_pos = float(np.median(nse)), float((nse > 0).mean())
 
-    n = seq // a.patch
+    n = y.shape[1] // a.patch
     r2_daily = _r2(y, p)
-    r2_patch = _r2(y.reshape(-1, n, a.patch).mean(-1),
-                   p.reshape(-1, n, a.patch).mean(-1))
+    r2_patch = _r2(y.reshape(len(y), n, a.patch).mean(-1),
+                   p.reshape(len(p), n, a.patch).mean(-1))
     r2 = r2_daily
-    print(f"\n=== regional LSTM, held-out basins ===")
+    print("")
+    print("=== regional LSTM, held-out basins ===")
+    if a.score_tail:
+        print(f"  PROTOCOL: last {a.score_tail} patch(es) of each window, "
+              f"{a.roll} rolling origins -- matches train_pub.py")
     print(f"  R2 DAILY (pooled) = {r2_daily:+.4f}   (n = {y.size:,})")
     print(f"  R2 16-d means     = {r2_patch:+.4f}")
     print(f"  per-basin NSE med = {nse_med:+.4f}  "
           f"({nse_pos:.0%} of {nse.size} basins > 0)")
+    if a.by_lead and a.score_tail:
+        for dd in (0, 1, 3, 7, 15):
+            if dd >= a.patch:
+                continue
+            yl = y.reshape(len(y), -1, a.patch)[:, :, dd]
+            pl = p.reshape(len(p), -1, a.patch)[:, :, dd]
+            dn = ((yl - yl.mean(1, keepdims=True)) ** 2).sum(1)
+            nl = 1 - ((yl - pl) ** 2).sum(1) / np.where(dn > 0, dn, np.nan)
+            nl = nl[np.isfinite(nl)]
+            print(f"      lead {dd+1:2d} d: per-basin median NSE "
+                  f"{float(np.median(nl)):+.4f}")
     print("  train_pub.py scores DAILY -- compare against that one.")
     print("\n  compare to the PUB runs on the same holdout:")
     print("    our K=0 (no context)   ~0.46      per-site pathway only")
@@ -246,6 +276,13 @@ if __name__ == "__main__":
     ap.add_argument("--include-test-gauges", action="store_true",
                     help="train on the held-out basins too -- the GAUGED "
                          "CEILING arm")
+    ap.add_argument("--by-lead", action="store_true",
+                    help="report NSE per lead day inside the scored tail")
+    ap.add_argument("--roll", type=int, default=1,
+                    help="rolling origins, one patch apart")
+    ap.add_argument("--score-tail", type=int, default=0, metavar="P",
+                    help="score only the last P patches of each window, "
+                         "matching train_pub.py --score-tail")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="lstm")
     main(ap.parse_args())

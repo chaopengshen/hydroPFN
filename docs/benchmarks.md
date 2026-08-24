@@ -79,10 +79,11 @@ Lead-time decay, their Table D1 (Appendix D):
 | δHBV-DA-PS | 0.820 | 0.777 | 0.769 | 0.762 | 0.756 |
 | LSTM-DA | 0.820 | 0.780 | 0.770 | 0.766 | 0.762 |
 
-**−0.064 over nine days.** Our lead curve is flat over sixteen (below), because
-we run with **known forcings** — "lead" here is position inside a predicted
-block, not distance from an initial condition. Comparable NSE at lead 1, a
-different problem beyond it.
+**−0.064 over nine days**, and monotone. Ours shows **no systematic decay**
+over sixteen days (see "On flat lead curves" below — it is noisy and
+non-monotonic, not literally flat), because we run with **known forcings**:
+"lead" here is position inside a predicted block, not distance from an initial
+condition. Comparable NSE at lead 1, a different problem beyond it.
 
 ### Yang et al. 2026 — h-Diffusion, hourly
 
@@ -153,7 +154,43 @@ Shared-weight model, by lead day:
 The separate `patch=1` model reaches **0.8765** at K=0, so unifying costs
 ~0.064 on this task: the patch=16 model is trained to predict a 16-day block
 uniformly and never learns to exploit the *recency* of the last observation.
-The flat curve is the signature of that.
+
+#### Why the by-lead numbers differ from the Task 3 numbers
+
+This confuses people (it confused the author), so state it explicitly.
+
+The model predicts a **16-day patch** and emits **all sixteen daily values**.
+The by-lead table and the Task 3 table score **different subsets of the same
+predictions**:
+
+| number | scored over | values per basin |
+|---|---|---|
+| 0.8822 (Task 3) | **all 16 days** of the patch | ~640 (40 origins x 16) |
+| 0.8816 | **all 16 days** of the patch | ~1600 (100 origins x 16) |
+| 0.8959 (by-lead) | **day 1 only** | ~100 (100 origins x 1) |
+
+The like-for-like pair is **0.8822 vs 0.8816** — the same quantity, differing
+only in K (8 vs 4) and origin count (40 vs 100), i.e. identical within noise.
+**0.8959 is a subset of that same run**: only the first day of each predicted
+patch. Day 1 is the easiest of the sixteen because it sits closest to the last
+observation, so scoring it alone gives a higher number.
+
+Nothing improved between the two; a narrower target was scored. The lead-1
+advantage over the 16-day average is about **+0.014** (0.8959 vs 0.8816 at K=4;
+0.8131 vs 0.8026 at K=0).
+
+#### On "flat" lead curves
+
+The K=0 curve reads 0.8131 / 0.8117 / 0.7756 / 0.8184 / 0.8086 across leads
+1/2/4/8/16 — **non-monotonic** (lead 8 beats lead 4), so this is noise around a
+flat trend, not a clean decay and not perfectly flat either. The honest
+statement is *no systematic decay, with lead 1 marginally best*. Compare
+Jamaat's monotone 0.820 -> 0.756 over nine days.
+
+The reason for the difference in shape: we run with **known forcings**, so a
+later day is not harder in the way it is for a model propagating an initial
+condition forward. Their decay measures state-adjustment relevance fading;
+ours measures position inside a simulated block.
 
 ### Task 3 — neighbours up to t (concurrent)
 
