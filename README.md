@@ -353,3 +353,76 @@ once produced a confident wrong answer:
 - **Thin channel-following water masks — the actual target — are untested.**
 - Single seed per sampler arm; the ordering is likely solid, the exact numbers
   are not.
+
+---
+
+## How this model is trained: the draw structure
+
+**Read this before interpreting any number in this repo.** What the model can
+do at inference is decided by what was *asked of it* during pretraining, and
+nothing else.
+
+### "Mixture" means a mixture of MASKING TASKS
+
+Not mixture-of-experts, not a data mixture. The `--mask-mix` flag samples
+**which kind of hole** is punched in the query's data on each training task,
+instead of always punching the same one.
+
+Every capability here is created by a hole. The model is only ever asked to
+fill in what was hidden — so **the shape of the hole is the task**, and the set
+of shapes seen during pretraining is exactly the set of capabilities that
+exists at inference.
+
+| hole shape | what it enforces |
+|---|---|
+| `whole_site` — all query discharge hidden | predict a basin with **no** record (ungauged / PUB) |
+| `causal_tail` — hide everything after *t* | forecasting and data assimilation |
+| `random_span` — hide a contiguous chunk | gap filling (a sensor was down for three weeks) |
+| `whole_variable` — hide one variable | cross-variable inference (infer precipitation from discharge) |
+| self-as-context | use a site's **own** lagged record through the same interface as a neighbour's |
+| K = 0 vs K > 0 | one set of weights must be both a standalone forward model and a context-conditioned one |
+| attribute masking | recover static properties from dynamics |
+
+### What is actually drawn
+
+Headline configuration (`--k-train 0,0,0,1,2,4,8,16 --self-ctx-p 0.4`):
+
+| draw | granularity | distribution |
+|---|---|---|
+| K (context size) | per **step** | K=0 **37.5%**; K ∈ {1,2,4,8,16} **12.5%** each |
+| self-as-context | per **step** | present **40%**, tail ~ U{1…15} patches |
+| mask kind | per task | `whole_site` **100%** — the mixture is **off** in every headline run |
+| window start, query basin | per task | uniform |
+| context sites | deterministic | K geographic nearest |
+
+Four effective task types:
+
+| | K=0 | K>0 |
+|---|---|---|
+| no self-context | forward model **22.5%** | neighbour assimilation **37.5%** |
+| self-as-context | self assimilation **15%** | self + neighbours **25%** |
+
+### The finding that governs all of this
+
+**Nothing here is zero-shot.** The identical architecture evaluated on
+self-as-context *without* that task in training scores **0.2490**; with it as a
+training draw, **0.7878**. A capability absent from the pretraining
+distribution does not exist at inference — verified mechanically as well: in a
+K=0-only checkpoint the cross-site attention weights sit at their random
+initialisation to five decimals, because that code path never executed.
+
+Two consequences readers should carry:
+
+- **The distribution is thin** — four task types, one hole shape. That is
+  defensible for the present results, but it is *not* a task distribution in
+  the TabPFN sense. Anything outside those four cells will not work.
+- **Presence is not enough; share matters.** With K=0 at only 1/6 of tasks the
+  forward pathway scored 0.658; upweighted it reaches 0.7164 and ties a
+  regional LSTM. The same default cost the 1-day-lead assimilation task 0.17.
+
+Draws still missing for the intended global, multivariate, DEM-integrated
+model — forcing-variable dropout, context with a different variable set than
+the query, cross-site cross-variable transfer, modality dropout, context from a
+different period, window-length draws, realistic gap patterns, and K up to
+20–50 with mixed entry types — are enumerated with rationale in
+`dem_foundation/docs/dev_dem.md`.
