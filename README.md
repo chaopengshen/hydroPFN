@@ -531,7 +531,25 @@ discharge. The K=0 version of that test has not been run.
 self-assimilation, gap-filling, cross-variable and forecasting — selected
 purely by what context is supplied at run time. Nothing is reconfigured.
 
-**Task 2 is a different model.** It uses `patch=1, win=64` against `patch=16,
-win=32` elsewhere, so the 1-day-lead number does not come from the same
-weights. A single model spanning both would need variable patch size or
-patch=1 with long windows; untested.
+**Task 2 is reachable from the shared weights after all.** The head emits
+`patch` daily values per token, so a `patch=16` model already produces a
+1-day-ahead prediction — the 16-day framing was a *scoring* choice, not an
+architectural limit. Reading `Z_trained2` at lead 1 with near-real-time data
+supplied through self-context:
+
+| lead | K=0 (self only) | K=4 (self + neighbours) |
+|---|---|---|
+| **1 day** | **0.8131** | **0.8959** |
+| 2 days | 0.8117 | 0.8906 |
+| 4 days | 0.7756 | 0.8854 |
+| 8 days | 0.8184 | 0.9005 |
+| 16 days | 0.8086 | 0.8936 |
+
+At K=0 — the Jamaat-comparable arm — that is 0.8131 against their 0.82.
+The separate `patch=1` specialist still reaches 0.8765, so unifying costs
+~0.064 on this task.
+
+**Note these are NOT comparable to the Task 3 numbers above**: they score only
+lead day 1, while Task 3 scores all 16 days of the patch. The all-days number
+from the same run is 0.8816, matching Task 3's 0.8822. See
+[docs/benchmarks.md](docs/benchmarks.md) for the full reconciliation.
