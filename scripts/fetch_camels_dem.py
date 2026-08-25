@@ -60,8 +60,9 @@ def main(a):
         by_tile[tile_name(lo, la)].append(i)
     print(f"{len(by_tile)} distinct 1-degree tiles to open")
 
-    out = np.full((len(sid), a.size, a.size), np.nan, dtype=np.float32)
+    out = np.full((len(sid), a.out_px, a.out_px), np.nan, dtype=np.float32)
     ok = np.zeros(len(sid), dtype=bool)
+    frac = np.zeros(len(sid), dtype=np.float32)   # fraction genuinely observed
 
     for t, (key, idxs) in enumerate(sorted(by_tile.items()), 1):
         n, w = key
@@ -72,13 +73,24 @@ def main(a):
                 for i in idxs:
                     r, c = src.index(lon[i], lat[i])
                     r0, c0 = int(r) - a.size // 2, int(c) - a.size // 2
-                    if r0 < 0 or c0 < 0 or r0 + a.size > H or c0 + a.size > W:
-                        continue          # patch would straddle a tile edge
-                    z = src.read(1, window=Window(c0, r0, a.size, a.size))
+                    # BOUNDLESS read. A wide window (5120 px = 47% of a 1-deg
+                    # tile) almost always overruns the tile edge, and a strict
+                    # in-bounds check then rejects EVERY wide patch -- the
+                    # 51 km pull returned 0/671 that way. Boundless fills the
+                    # overrun with nodata, which we then repair, and we record
+                    # what fraction was genuinely observed.
+                    z = src.read(1, window=Window(c0, r0, a.size, a.size),
+                                 out_shape=(a.out_px, a.out_px),
+                                 boundless=True, fill_value=-999999.0)
                     z = z.astype(np.float32)
-                    # 3DEP nodata is a large negative sentinel
-                    if not np.isfinite(z).all() or z.min() < -1e4:
+                    good = np.isfinite(z) & (z > -1e4)
+                    frac[i] = good.mean()
+                    if frac[i] < a.min_valid:
                         continue
+                    if not good.all():
+                        # fill the collar with the observed mean rather than
+                        # dropping the patch; a constant adds no false relief
+                        z = np.where(good, z, z[good].mean())
                     out[i], ok[i] = z, True
         except Exception as e:                                # noqa: BLE001
             print(f"  [{t}/{len(by_tile)}] n{n:02d}w{w:03d} FAILED: "
@@ -95,8 +107,10 @@ def main(a):
         print(f"  elevation range {np.nanmin(z):.0f} .. {np.nanmax(z):.0f} m")
         rel = z - z.mean(axis=(1, 2), keepdims=True)
         print(f"  within-patch relief: median {np.median(rel.max((1,2)) - rel.min((1,2))):.0f} m")
-    np.savez_compressed(a.out, dem=out, ok=ok, site_id=sid,
-                        lat=lat, lon=lon, size=a.size)
+    if ok.sum():
+        print(f"  observed fraction: median {np.median(frac[ok]):.2f}")
+    np.savez_compressed(a.out, dem=out, ok=ok, valid_frac=frac, site_id=sid,
+                        lat=lat, lon=lon, size=a.size, out_px=a.out_px)
     print(f"wrote {a.out}")
 
 
@@ -106,6 +120,15 @@ if __name__ == "__main__":
                     help="npz with lat/lon/site_id (see "
                          "scripts/export_coords.py)")
     ap.add_argument("--size", type=int, default=128,
-                    help="patch side in pixels (128 @10 m = 1.28 km)")
+                    help="window side in SOURCE pixels (10 m each), so 128 = "
+                         "1.28 km and 5120 = 51.2 km")
+    ap.add_argument("--out-px", type=int, default=128,
+                    help="output grid side; the window is decimated to this, "
+                         "so a large --size becomes a coarse wide view. This "
+                         "is how the BASIN-SCALE view is obtained without "
+                         "needing basin polygons: read wide, resample down.")
+    ap.add_argument("--min-valid", type=float, default=0.5,
+                    help="reject a patch if less than this fraction of it was "
+                         "genuinely observed rather than filled")
     ap.add_argument("--out", default="logs/camels_dem.npz")
     main(ap.parse_args())

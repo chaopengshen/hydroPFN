@@ -26,10 +26,14 @@ this page is stale.
 
 4. **Route matters, and it splits by whose data it is.** For a site's **own**
    lagged record, feeding it through that site's own token stream (`--self-da`,
-   **0.8765**) beats routing it through cross-site attention (`--self-ctx`,
-   **0.7202**) at matched resolution. For **other sites'** data, cross-site
-   attention is the only route — and it works, worth **+0.39**. So: own data
-   down the site's own stream; neighbours through cross-attention.
+   **0.8765**) decisively beats routing it through cross-site attention
+   (`--self-ctx`, **0.7202**, or **0.5955** at matched allocation) — a gap of
+   0.18–0.28 at matched resolution. For **other sites'** data cross-site
+   attention is the only route available, and it works, worth **+0.39**.
+   **So: own data down the site's own stream; other sites through
+   cross-attention.** Composability is NOT free — an earlier claim that the
+   context route was +0.11 better came from a confounded `patch=16` pair and
+   is retracted.
 
 5. **In-context reading of a gauge does NOT beat training on that gauge.** It
    recovers about **64%** of the benefit (+0.080 vs +0.125 over having nothing).
@@ -168,7 +172,7 @@ they propagate an initial condition forward, we run with **known forcings**, so
 |---|---|---|---|
 | `J_da_k0` | **`--self-da`** — own token stream, self-attention | 7/7 | **0.8765** |
 | `X_p1ctx` | **`--self-ctx`** — own basin as a context entry | 3/7 | **0.7202** |
-| `X_p1ctx_k0` | `--self-ctx`, matched allocation | 7/7 | *running* |
+| `X_p1ctx_k0` | `--self-ctx`, matched allocation | 7/7 | **0.5955** |
 | *Jamaat 2025, variational DA* — **gauged basins** | own gauge, optimisation per step | — | *0.82* |
 
 `X_p1ctx` at K=4 reaches 0.7901.
@@ -191,10 +195,15 @@ looked +0.11 *better* (0.7878 vs 0.6764), and that was used to argue
 composability came free. It does not: at matched resolution, composability
 appears to cost accuracy.
 
-**Still not fully clean.** `J_da_k0` trained K=0 on 7/7 tasks; `X_p1ctx` on
-3/7. Per the allocation lesson (which cost 0.17 on this very task once
-already), part of that 0.156 may be allocation rather than route.
-`X_p1ctx_k0` matches the allocation exactly and is the deciding run.
+**Allocation ruled out.** `X_p1ctx_k0` matches `J_da_k0`'s allocation exactly
+(K=0 on 7/7, self-context on every task) and scores **0.5955** — *worse* than
+the 3/7 run, not better. So the gap is not allocation; the true route effect is
+larger than 0.156.
+
+Why the matched run is worst of the three: with `--k-train 0 --self-ctx-p 1.0`
+every task is "K=0 plus self-context", so cross-site attention only ever sees
+the degenerate self case and never learns general context use. Diversity in the
+draw distribution matters here too.
 
 ---
 
