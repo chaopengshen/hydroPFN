@@ -53,7 +53,8 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
                ctx_start=None, latlon=None, self_da=0, mask_kind=None,
-               score_tail=0, attr_mask=0.0, self_ctx=0, area=None):
+               score_tail=0, attr_mask=0.0, self_ctx=0, area=None,
+               dem=None, dem_p=1.0, attr_drop=0.0):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -171,7 +172,29 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     av = np.ones((S, A.shape[1]), np.float32)
     if attr_mask > 0:
         av[0] = (rng.random(A.shape[1]) > attr_mask).astype(np.float32)
+    if attr_drop > 0 and rng.random() < attr_drop:
+        # DROP THE WHOLE CURATED ATTRIBUTE VECTOR on this task. Not per
+        # attribute -- all of it -- so the only basin descriptor left is the
+        # DEM token plus forcings. This is the SUBSTITUTION test: with statics
+        # always present and DEM present only half the time, the optimiser
+        # will lean on the curated summary and terrain can only ever be
+        # marginal, which is precisely what the first ablation measured.
+        #
+        # It is also the honest global case. Curated attributes are a CONUS
+        # luxury; at 40,000 stations worldwide you have a DEM and little else.
+        av[0] = 0.0
     task["attr_vis"] = av
+    if dem is not None:
+        # MODALITY DROPOUT. A pathway always present in training becomes
+        # load-bearing and will be absent globally -- 3DEP is CONUS-only
+        # and the global tier is 30-90 m. Dropping DEM on a fraction of
+        # tasks is also what makes the ablation readable: the SAME weights
+        # run with and without it, so the marginal contribution is measured
+        # rather than inferred by comparing two separate models.
+        task["dem"] = np.nan_to_num(dem[sites]).astype(np.float32)
+        keep = (rng.random(S) < dem_p).astype(np.float32)
+        keep *= np.isfinite(dem[sites]).all(1).astype(np.float32)
+        task["dem_vis"] = keep
     # which query patches are actually being asked for -- eval scores ONLY
     # these, so self-DA is not credited for copying back its visible history
     # WHAT GETS SCORED. Normally every hidden query patch. `score_tail` P
@@ -287,6 +310,23 @@ def main(a):
     # the QUERY's own streamflow, and it never is.
     ll = d["latlon"]
     ar = d.get("area")
+    demf = None
+    if a.dem_feats:
+        _z = np.load(a.dem_feats, allow_pickle=True)
+        _pos = {sv: i for i, sv in
+                enumerate(np.asarray(_z["site_id"]).astype(str))}
+        _F, _ok = _z["feats"], _z["ok"]
+        # JOIN BY SITE ID, never by index -- a positional join silently
+        # pairs each basin with some other basin's terrain
+        demf = np.full((len(d["site_id"]), _F.shape[1]), np.nan, np.float32)
+        _hit = 0
+        for _i, sv in enumerate(d["site_id"]):
+            j = _pos.get(str(sv))
+            if j is not None and _ok[j]:
+                demf[_i] = _F[j]; _hit += 1
+        demf = (demf - np.nanmean(demf, 0)) / (np.nanstd(demf, 0) + 1e-6)
+        print(f"  DEM features: {_hit}/{len(demf)} sites matched by id, "
+              f"{_F.shape[1]} dims", flush=True)
     # TWO geo rankings, and conflating them was a leak.
     #
     # TRAINING context must come from TRAINING basins only. Ranking over all
@@ -352,7 +392,8 @@ def main(a):
               f"neighbour-trained LSTM arm", flush=True)
 
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
-                      d_ffd=a.d_ffd, k_summary=a.k_summary)
+                      d_ffd=a.d_ffd, k_summary=a.k_summary,
+                      n_dem=(demf.shape[1] if demf is not None else 0))
     net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
                    geo=a.geo, causal=a.causal,
                    no_pooled=a.no_pooled).to(DEVICE)
@@ -425,6 +466,8 @@ def main(a):
                                      start_hi=train_end_patch, ctx_start=cs,
                                      latlon=ll if a.geo else None,
                                      area=ar if a.area_scale else None,
+                                     dem=demf, dem_p=a.dem_p,
+                                     attr_drop=a.attr_drop,
                                      # TRAINING tail length is RANDOM.
                                      # Fixing it at --self-da (=1) hides one
                                      # patch per task, so the model gets 32x
@@ -560,7 +603,9 @@ def main(a):
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
                         geo_rank=geo_rank, ctx_start=cs,
                         latlon=ll if a.geo else None,
-                        area=ar if a.area_scale else None, self_da=a.self_da,
+                        area=ar if a.area_scale else None,
+                        dem=demf, dem_p=a.dem_eval,
+                        attr_drop=a.attr_eval, self_da=a.self_da,
                         score_tail=a.score_tail, attr_mask=a.mask_attrs,
                         self_ctx=a.self_ctx)
                     csl = sl if cs is None else slice(cs, cs + a.win)
@@ -715,6 +760,21 @@ if __name__ == "__main__":
                          "forecasting conditionals -- otherwise the mixture "
                          "is only measured on PUB, i.e. its cost and never "
                          "its benefit")
+    ap.add_argument("--attr-drop", type=float, default=0.0,
+                    help="TRAINING: probability of dropping the ENTIRE "
+                         "curated attribute vector, forcing the model to "
+                         "rely on DEM + forcings instead")
+    ap.add_argument("--attr-eval", type=float, default=0.0,
+                    help="EVAL: 1.0 = statics withheld (the global case), "
+                         "0.0 = statics available")
+    ap.add_argument("--dem-feats", default=None,
+                    help="npz of per-site terrain features (see "
+                         "dem_diffusion_features.py --extract-to)")
+    ap.add_argument("--dem-p", type=float, default=0.5,
+                    help="TRAINING: probability a site keeps its DEM token")
+    ap.add_argument("--dem-eval", type=float, default=1.0,
+                    help="EVAL: 1.0 = DEM on, 0.0 = off. The ablation is "
+                         "the SAME checkpoint run at both.")
     ap.add_argument("--area-scale", action="store_true",
                     help="give context tokens the log drainage-area RATIO to "
                          "the query, the conventional donor-transfer scaling")

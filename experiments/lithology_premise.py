@@ -82,7 +82,74 @@ def terrain_features(z: np.ndarray, px: float = 10.0) -> dict:
     return out
 
 
-def main(patches: str, min_class: int, seed: int) -> None:
+def diffusion_feats(P, ckpt, t_level, device=None):
+    """Activations from the trained DEM diffusion U-Net, mean+std pooled.
+
+    The 17 hand descriptors are elevation moments, slope statistics and
+    curvature. They cannot represent ridge spacing, valley width, or the
+    U-versus-V cross-section that marks a glaciated valley -- which is
+    exactly the kind of surface expression that betrays what is underneath.
+    The diffusion net was fitted GENERATIVELY on CONUS terrain, so it had
+    to model that structure whether or not any label asked for it. On
+    channel width these features carried ~2x the standalone signal of the
+    hand descriptors (0.193 vs 0.103), so they are the natural thing to
+    try here."""
+    import torch
+    sys.path.insert(0, str(ROOT / 'src'))
+    from hydropfn.models.diffusion import DenoiseUNet, Diffusion
+    dev = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    ck = torch.load(ckpt, map_location=dev)
+    sd = ck.get('net', ck.get('model', ck))
+    # A scale-conditioned checkpoint carries an smlp; it must be built with
+    # scale_cond=True or load_state_dict rejects the extra tensors, and it
+    # must be GIVEN the scale or it sees a zero vector it was never trained
+    # on. These patches are 10 m over 1.28 km, so that is what we pass.
+    has_scale = any(k.startswith('smlp.') for k in sd)
+    net = DenoiseUNet(w=sd['inp.weight'].shape[0],
+                      in_ch=sd['inp.weight'].shape[1],
+                      scale_cond=has_scale).to(dev)
+    net.load_state_dict(sd); net.eval()
+    scale = None
+    if has_scale:
+        import numpy as _np
+        scale = torch.tensor([[_np.log10(10.0), _np.log10(1.28)]],
+                             device=dev, dtype=torch.float32)
+        print(f'  scale-conditioned checkpoint: passing 10 m / 1.28 km')
+    diff = Diffusion(device=dev)
+    Z = P.astype('float32')
+    # match the sampler's per-patch normalisation, or the activations are
+    # far outside the training distribution and look like a null result
+    Z = Z - Z.mean((1, 2), keepdims=True)
+    Z = Z / (Z.std((1, 2), keepdims=True) + 1e-6)
+    out = []
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for i in range(0, len(Z), 64):
+            x0 = torch.tensor(Z[i:i + 64], device=dev)[:, None]
+            t = torch.full((x0.shape[0],), int(t_level), device=dev,
+                           dtype=torch.long)
+            xt = diff.q_sample(x0, t, torch.randn_like(x0))
+            if net.inp.in_channels == 3:
+                m = torch.ones_like(xt)
+                xt = torch.cat([xt, x0 * m, m], 1)
+            e = net.temb(t)
+            if scale is not None:
+                e = e + net.smlp(scale.expand(x0.shape[0], -1))
+            import torch.nn.functional as Fn
+            h1 = net.d1(net.inp(xt), e)
+            h2 = net.d2(Fn.avg_pool2d(h1, 2), e)
+            h3 = net.d3(Fn.avg_pool2d(h2, 2), e)
+            mid = net.mid(Fn.avg_pool2d(h3, 2), e)
+            f = []
+            for h in (h2, h3, mid):
+                f += [h.mean((2, 3)), h.std((2, 3))]
+            out.append(torch.cat(f, 1).float().cpu().numpy())
+    import numpy as _np
+    return _np.nan_to_num(_np.concatenate(out))
+
+
+def main(patches: str, min_class: int, seed: int, feats: str = 'hand',
+         ckpt: str = None, t_level: int = 50) -> None:
     from pyogrio import read_dataframe
     import shapely
 
@@ -124,7 +191,17 @@ def main(patches: str, min_class: int, seed: int) -> None:
     print(f"\n  usable after dropping classes with <{min_class}: {keep.sum():,}")
 
     # --- features
-    X = pd.DataFrame([terrain_features(P[i]) for i in np.flatnonzero(keep)])
+    idx = np.flatnonzero(keep)
+    if feats == 'diffusion':
+        X = pd.DataFrame(diffusion_feats(P[idx], ckpt, t_level))
+        X.columns = [f'df{i}' for i in range(X.shape[1])]
+    elif feats == 'both':
+        Xh = pd.DataFrame([terrain_features(P[i]) for i in idx])
+        Xd = pd.DataFrame(diffusion_feats(P[idx], ckpt, t_level))
+        Xd.columns = [f'df{i}' for i in range(Xd.shape[1])]
+        X = pd.concat([Xh.reset_index(drop=True), Xd], axis=1)
+    else:
+        X = pd.DataFrame([terrain_features(P[i]) for i in idx])
     cols = list(X.columns)
     yl = y_lith[keep]
     ya = y_age[keep]
@@ -188,6 +265,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--patches", default=str(ROOT / "logs" / "dem_patches.npz"))
     ap.add_argument("--min-class", type=int, default=100)
+    ap.add_argument("--feats", default="hand",
+                    choices=["hand", "diffusion", "both"])
+    ap.add_argument("--ckpt",
+                    default="/nfs/data/cxs1024/dem_foundation/logs/allfix.pt")
+    ap.add_argument("--t-level", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
-    main(a.patches, a.min_class, a.seed)
+    main(a.patches, a.min_class, a.seed, a.feats, a.ckpt, a.t_level)

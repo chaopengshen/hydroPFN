@@ -69,6 +69,7 @@ class SiteEncoder(nn.Module):
     def __init__(self, n_attr: int, n_vars: int, patch: int = 16,
                  d: int = D_MODEL, depth: int = 4, heads: int = 4,
                  k_summary: int = 3, dropout: float = 0.1,
+                 n_dem: int = 0,
                  d_ffd: int = 512):
         """`d_ffd` defaults to 512, not the usual 4*d = 1024, so the trunk has
         the SAME shape as StefaLand's `encoder.transformer_encoder` and its
@@ -79,6 +80,7 @@ class SiteEncoder(nn.Module):
         """
         super().__init__()
         self.d, self.patch, self.n_vars, self.k = d, patch, n_vars, k_summary
+        self.n_dem = n_dem
 
         # 2*n_attr in: the (masked) values AND a visibility indicator per
         # attribute. Zeroing a masked attribute without the indicator is the
@@ -96,6 +98,14 @@ class SiteEncoder(nn.Module):
         # (time series -> statics) rather than staying within one.
         self.attr_head = nn.Sequential(
             nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Linear(d, n_attr))
+        # DEM token. Terrain enters as ITS OWN TOKEN rather than being
+        # concatenated into the static vector, so that "no DEM here" is an
+        # ABSENT TOKEN -- the same object as an absent series variable --
+        # instead of a zero that means "average terrain". 3DEP is CONUS-only
+        # and the global tier is 30-90 m, so missing/degraded DEM is the
+        # normal case, not an edge case.
+        self.dem_proj = nn.Linear(n_dem, d) if n_dem else None
+        self.dem_absent = nn.Parameter(torch.zeros(d))
         self.value_proj = nn.Linear(patch, d)
         self.var_emb = nn.Embedding(n_vars, d)
         self.mask_tok = nn.Parameter(torch.zeros(d))
@@ -134,9 +144,10 @@ class SiteEncoder(nn.Module):
             (they read everything) but in causal mode they are dead ends, and
             PUBModel skips the pooled path that consumes them.
         """
-        L = 1 + self.k + N * V
+        n_head = 1 + self.k + (1 if self.dem_proj is not None else 0)
+        L = n_head + N * V
         m = torch.ones(L, L, dtype=torch.bool, device=dev)      # all forbidden
-        s0 = 1 + self.k
+        s0 = n_head
         idx = torch.arange(N * V, device=dev)
         patch = idx // V                                        # (N*V,)
         m[s0:, s0:] = patch[None, :] > patch[:, None]           # future = True
@@ -145,6 +156,20 @@ class SiteEncoder(nn.Module):
         m[1:s0, :] = False                                      # summaries read all
         m[:, 1:s0] = True                                       # ...but are never read
         m[1:s0, 1:s0] = False                                   # (keep rows legal)
+        if self.dem_proj is not None:
+            # The DEM token is STATIC in time, so it is a legal KEY for every
+            # series token -- terrain does not change between patch 3 and 30.
+            #
+            # But it must READ nothing except itself. The summary rule above
+            # (`m[1:s0, :] = False`) would otherwise let it read the whole
+            # series, and combining that with being a universal key opens
+            # future -> DEM -> past. Measured when this was wrong: the leak
+            # test moved early patches by 1.4e-03 instead of exactly 0.0.
+            # Same reasoning as the static token, which reads only itself.
+            d0 = s0 - 1
+            m[d0, :] = True
+            m[d0, d0] = False
+            m[s0:, d0] = False
         return m
 
     def forward(self, batch: dict, return_hidden: bool = False,
@@ -174,13 +199,27 @@ class SiteEncoder(nn.Module):
         tok = tok.reshape(B, N * V, self.d)
 
         q = self.summary_q.expand(B, -1, -1)
-        seq = torch.cat([st[:, None, :], q, tok], dim=1)
+        parts = [st[:, None, :], q]
+        if self.dem_proj is not None:
+            dv = batch.get("dem")
+            dm = batch.get("dem_vis")          # 1 = present, 0 = absent
+            if dv is None:
+                dt = self.dem_absent.expand(B, 1, -1)
+            else:
+                dt = self.dem_proj(torch.nan_to_num(dv))[:, None, :]
+                if dm is not None:
+                    k = dm.view(B, 1, 1)
+                    dt = k * dt + (1 - k) * self.dem_absent
+            parts.append(dt)
+        parts.append(tok)
+        seq = torch.cat(parts, dim=1)
 
         # padding: never let the trunk attend to slots that are not real data.
         # NOTE this is the "absent" that is never scored; a MASKED-but-valid
         # token stays in the sequence, because the model must infer it.
+        n_head = 1 + self.k + (1 if self.dem_proj is not None else 0)
         pad = torch.cat([
-            torch.ones(B, 1 + self.k, device=dev, dtype=torch.bool),
+            torch.ones(B, n_head, device=dev, dtype=torch.bool),
             valid.reshape(B, N * V).bool()], dim=1)
 
         attn_mask = self._causal_mask(N, V, dev) if causal else None
@@ -188,7 +227,7 @@ class SiteEncoder(nn.Module):
                        src_key_padding_mask=~pad)
         t_static = h[:, :1]
         t_series = h[:, 1:1 + self.k]
-        h_series = h[:, 1 + self.k:]
+        h_series = h[:, n_head:]
         recon = self.head(h_series).reshape(B, N, V, self.patch)
         out = {"recon": recon, "t_static": t_static, "t_series": t_series,
                "attr_recon": self.attr_head(t_static.squeeze(1))}

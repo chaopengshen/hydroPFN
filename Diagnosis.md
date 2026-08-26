@@ -415,3 +415,119 @@ The new entry in the pattern: **three of these four were errors in my own
 instrumentation, not in the model** — and two of them ran *against* us, which
 is why they survived so long. A bias that flatters gets challenged; a bias that
 penalises just looks like an honest result.
+
+---
+
+# 2026-08-26 — the DEM arm: seven negatives, two positives, and one mechanism
+
+The question: does terrain add anything the time-series arm does not already
+have? Tested BEFORE building a connector, because building first conflates
+"does DEM carry signal" with "did we wire it correctly" — the confound that
+made the geo-encoding look useless when it had merely been attached to a dead
+path.
+
+## What was measured
+
+Source: USGS 3DEP 1/3 arc-second (~10 m), streamed via `/vsicurl`. 655/671
+CAMELS gauges, 4,402 HYDRoSWOT sites, 6,000 pretraining locations, 5,368
+within-basin points.
+
+| target | curated table exists? | DEM effect |
+|---|---|---|
+| CAMELS flow signatures, 1.28 / 12.8 / 51.2 km | yes (26 statics) | −0.046 … +0.025 |
+| channel width (4,402 sites) | yes (NHDPlus) | +0.006 |
+| channel depth | yes | −0.002 |
+| streamflow in-model, K=0, 1.28 km | yes | **−0.009** |
+| streamflow in-model, K=0, 12.8 km + noise-averaged | yes | **+0.016** |
+| streamflow in-model, K=4/8 | yes | ~0 |
+| **streamflow, statics WITHHELD 50%** | — | **−0.075** |
+| **lithology (LITH1)** | **NO** | **0.593 → 0.644 acc** |
+| **bedrock age (log10 Ma)** | **NO** | **0.367 → 0.438 R²** |
+
+## The organising principle
+
+**DEM helps only where no curated attribute table exists.** Every negative is
+on a target where somebody already hand-built the terrain summary —
+`elev_mean`, `slope_mean`, `MEANELEVSMO`, `log_slope`. We were repeatedly
+asking a raw DEM to beat a curated summary *of itself*. Geology has no such
+table, and that is the one place terrain wins.
+
+## The mechanism, and why the substitution test FAILED
+
+A prediction was made in advance and falsified. With curated attributes
+withheld on 50% of tasks — the honest global case, where a station has a DEM
+and little else — DEM was predicted to gain **+0.05 or more**. It **lost
+0.075**, the largest DEM effect measured and the wrong sign.
+
+The training loss went the other way (1.299 with DEM vs 1.539 without), so the
+features fit the training basins *better* and generalised worse. Textbook
+overfitting, with a specific suspected cause:
+
+**Terrain features act as a LOCATION FINGERPRINT.** Terrain is strongly
+spatially autocorrelated, so 768 DEM numbers largely encode *where you are*.
+Within a region that is useful; under leave-**region**-out it is exactly the
+wrong thing to memorise, because held-out regions carry terrain signatures
+never seen in training.
+
+This fits every result: DEM never helped streamflow, hurt *more* when the model
+was forced to rely on it, and helped only on **geology** — where the label is
+itself a function of location, so fingerprinting is not penalised.
+
+It is also the failure mode the geo-encoding was explicitly designed against:
+displacement was made translation-invariant so the connector could not identify
+regions. **The DEM features have no such protection.**
+
+**Not yet tested, and it decides the question:** do DEM features predict HUC2
+region? If yes, the fingerprint is confirmed, the streamflow negatives are
+explained, and the geology positive becomes suspect for the same reason.
+
+## Side finding, independent of DEM and worth keeping
+
+**Attribute dropout improves the time-series arm.** Withholding the curated
+statics on 50% of tasks: K=0 goes **0.7142 → 0.7463 (+0.032)** under
+leave-region-out. Always-available statics appear to cause overfitting; forcing
+the model to sometimes work without them generalises better. Free improvement,
+no DEM involved.
+
+## Two corrections to earlier DEM claims
+
+1. **"DEM actively hurts" (1.28 km, −0.009) was partly my extraction, not
+   terrain.** Two independent flaws each cost ~0.012: a footprint far too small
+   (1.28 km against a median 18 km basin) and a **stochastic feature
+   extractor** — `q_sample` injects a random field, so a single draw makes each
+   site's features a *sample* rather than an expectation. Ridge across
+   thousands of sites averages that away, which is why the probes looked
+   healthy while the in-model result did not. Averaging 8 draws and widening to
+   12.8 km turned −0.009 into +0.016.
+
+2. **"The U-Net has no embedding designed to be extracted" was true but the
+   wrong conclusion.** Its bottleneck is a 128×16×16 *spatial* map. That is a
+   liability for producing site tokens and exactly right for producing 2-D
+   fields. The sampler was built to generate terrain, not describe it — and a
+   future groundwater-level arm would want the field, not the vector. Its
+   conditional-inpainting objective already matches "sparse wells → continuous
+   water table".
+
+## Multi-scale pretraining
+
+17,500 patches at three footprints (1.28 km @10 m, 12.8 km @100 m, 51.2 km
+@400 m), 2.03M-param U-Net, scale-conditioned on **continuous**
+`[log10(m/px), log10(footprint km)]` so an unseen resolution *interpolates*
+rather than falling off a lookup table — necessary because 3DEP 10 m is
+CONUS-only and the global tier is 30 m (GLO-30) or 90 m (MERIT).
+
+Improves the geology features across all three metrics (age R² 0.420 → 0.438).
+Notably the probe evaluates a **single** scale, so the gain comes from having
+been *trained* across three, not from being given three at inference.
+
+## Open
+
+- **the fingerprint check** — do DEM features predict HUC2? Decides everything
+  above.
+- SGMC circularity: geologists map unit contacts partly *from* topography.
+  Visible in per-class recall — Sedimentary 0.72, Unconsolidated 0.58,
+  Igneous **0.087**.
+- SGMC is US-only; the global label is GLiM, much coarser.
+- 30 m degradation: downsample CONUS and re-probe. No new data needed.
+- within-basin patch bag (5,368 points, 8 per basin, with relative position
+  and basin area) — fetched, not yet tested.
