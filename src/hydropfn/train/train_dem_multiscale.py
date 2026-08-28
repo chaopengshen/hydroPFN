@@ -191,7 +191,16 @@ def main(a):
             mu_ = (x0 * m).sum(dim=(1, 2, 3), keepdim=True) / v
             sd_ = ((((x0 - mu_) * m) ** 2).sum(dim=(1, 2, 3), keepdim=True)
                    / v).sqrt().clamp(min=a.std_floor)
-            x0 = (x0 - mu_) / sd_
+            # Clamp AFTER normalising. When the known pixels are flat but the
+            # hole holds relief (a valley window onto mountains -- common at
+            # the 51 km level, absent from the original's single-scale
+            # corpus), valid-region sd is tiny and the hole normalises to
+            # hundreds. Under v-prediction the TARGET contains
+            # -(1-ab).sqrt()*x0, so the loss explodes (val 299-570 at the
+            # start of the first parity-v run). The sampler already clamps x0
+            # to +-6 at every DDIM step, so targets beyond that range are
+            # unreachable at inference and training on them is pure waste.
+            x0 = ((x0 - mu_) / sd_).clamp(-8.0, 8.0)
         if a.residual:
             # RESIDUAL PARAMETERISATION. Predict the field MINUS its
             # harmonic fill, with the harmonic handed over as the
@@ -227,7 +236,7 @@ def main(a):
                     vsd = ((((vx - vmu) * vm) ** 2)
                            .sum(dim=(1, 2, 3), keepdim=True)
                            / vv).sqrt().clamp(min=a.std_floor)
-                    vx = (vx - vmu) / vsd
+                    vx = ((vx - vmu) / vsd).clamp(-8.0, 8.0)
                 if a.residual:
                     vh = harmonic_torch(vx * vm, vm)
                     vl = diff.loss_cond(net, vx - vh, vm, cond=vh,

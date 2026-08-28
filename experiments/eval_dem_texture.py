@@ -141,7 +141,7 @@ def main(a):
                 mu_ = (x0 * m).sum(dim=(1, 2, 3), keepdim=True) / v
                 sd_ = ((((x0 - mu_) * m) ** 2).sum(dim=(1, 2, 3), keepdim=True)
                        / v).sqrt().clamp(min=0.5)
-                x0 = (x0 - mu_) / sd_
+                x0 = ((x0 - mu_) / sd_).clamp(-8.0, 8.0)
             with torch.no_grad():
                 harm = harmonic_torch(x0 * m, m)
                 if a.residual:
