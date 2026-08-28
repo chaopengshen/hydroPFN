@@ -33,7 +33,8 @@ import torch
 
 from hydropfn.metrics.terrain import score
 from hydropfn.models.diffusion import DenoiseUNet, Diffusion, harmonic_torch
-from hydropfn.train.train_dem_multiscale import load_levels, sample_holes
+from hydropfn.train.train_dem_multiscale import (load_levels, sample_holes,
+                                                 sample_holes_orig)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def rerank(cands, known, mask):
@@ -87,7 +88,7 @@ def main(a):
              for t in a.levels.split(";")]
     P, S, src = load_levels(specs)
     ck0 = torch.load(a.ckpt, map_location="cpu")
-    vnorm = bool(ck0.get("valid_norm", False))
+    vnorm = bool(ck0.get("valid_norm", False)) or a.force_valid_norm
     if vnorm:
         # match the checkpoint's training: mean-removed raw metres here, then
         # per-sample normalisation from VALID pixels after the mask is drawn.
@@ -112,7 +113,11 @@ def main(a):
                       ).to(DEVICE)
     net.load_state_dict(sd)
     net.eval()
-    diff = Diffusion(device=DEVICE)
+    # the checkpoint's parameterisation, not a default: decoding a
+    # v-trained net as eps produces garbage that LOOKS like a model failure
+    par = ck0.get("param", "eps")
+    diff = Diffusion(device=DEVICE, param=par)
+    print(f"param={par}")
     print(f"\nloaded {a.ckpt}   (DDIM {a.steps} steps)\n")
 
     hdr = f"{'scale':>9} {'method':>9} |" + "".join(f"{k:>15}" for k in KEYS)
@@ -128,7 +133,9 @@ def main(a):
             b = sel[i:i + a.batch]
             x0 = torch.tensor(Z[b])[:, None].to(DEVICE)
             sc = torch.tensor(S[b]).to(DEVICE)
-            m = sample_holes(len(b), Z.shape[-1], rng, DEVICE)
+            holes = (sample_holes_orig if a.holes == "orig"
+                     else sample_holes)
+            m = holes(len(b), Z.shape[-1], rng, DEVICE)
             if vnorm:
                 v = m.sum(dim=(1, 2, 3), keepdim=True).clamp(min=1.0)
                 mu_ = (x0 * m).sum(dim=(1, 2, 3), keepdim=True) / v
@@ -186,6 +193,16 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--n", type=int, default=64)
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--holes", choices=["orig", "mixed"], default="orig",
+                    help="hole distribution to SCORE on. The 0.810 anchor "
+                         "was measured on the ORIGINAL distribution "
+                         "(squares 1.5-11% + strokes); scoring on the "
+                         "harder mixed one and comparing to 0.810 is a "
+                         "cross-protocol comparison")
+    ap.add_argument("--force-valid-norm", action="store_true",
+                    help="for checkpoints from the ORIGINAL script, which "
+                         "trained valid-normalised but predate the "
+                         "valid_norm flag in the checkpoint dict")
     ap.add_argument("--residual", action="store_true",
                     help="checkpoint predicts the residual over harmonic")
     ap.add_argument("--best-of", type=int, default=1,

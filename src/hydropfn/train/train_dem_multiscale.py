@@ -153,7 +153,13 @@ def main(a):
     print(f"train {len(tr):,}  val {len(va):,}")
 
     net = DenoiseUNet(w=a.width, in_ch=3, scale_cond=True).to(DEVICE)
-    diff = Diffusion(device=DEVICE)
+    # v-prediction was part of the winning recipe (allfix.pt stores
+    # param='v'), and for a texture-motivated sampler it is arguably the
+    # core of it: eps-prediction underweights the low-SNR steps where fine
+    # texture lives, which is the blur mechanism itself. Every earlier
+    # multi-scale run silently used the eps default -- the SIXTH element
+    # lost in the port.
+    diff = Diffusion(device=DEVICE, param=a.param)
     print(f"DenoiseUNet {sum(p.numel() for p in net.parameters())/1e6:.2f}M "
           f"params, scale-conditioned", flush=True)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
@@ -235,7 +241,7 @@ def main(a):
     out = LOGS / f"dem_ms_{a.tag}.pt"
     save = {"net": net.state_dict(), "levels": a.levels,
             "scale_cond": True, "residual": a.residual,
-            "valid_norm": a.valid_norm}
+            "valid_norm": a.valid_norm, "param": a.param}
     if ema is not None:
         save["ema"] = ema
     torch.save(save, out)
@@ -250,6 +256,8 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=8000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--param", choices=["eps", "v"], default="eps",
+                    help="the winning single-scale recipe used v")
     ap.add_argument("--ema", type=float, default=0.999,
                     help="EMA decay; 0 disables. The original evaluated EMA")
     ap.add_argument("--orig-masks", action="store_true",
