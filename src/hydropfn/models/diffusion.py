@@ -217,7 +217,7 @@ class Diffusion:
 
     @torch.no_grad()
     def ddim_cond(self, net, known, mask, steps: int = 50,
-                  resample: int = 2, ctx_override=None):
+                  resample: int = 2, ctx_override=None, scale=None):
         """DDIM with the context supplied as input channels.
 
         `resample` implements RePaint's jump-back: after each step, re-noise
@@ -235,7 +235,7 @@ class Diffusion:
             for u in range(resample):
                 tb = torch.full((B,), int(t), device=known.device,
                                 dtype=torch.long)
-                pred = net(torch.cat([x, ctx], dim=1), tb)
+                pred = net(torch.cat([x, ctx], dim=1), tb, scale)
                 eps, x0 = self._to_eps_x0(pred, x, tb)
                 x0 = x0.clamp(-6, 6)
                 x0 = mask * known + (1 - mask) * x0

@@ -36,7 +36,8 @@ import time
 import numpy as np
 import torch
 
-from hydropfn.models.diffusion import DenoiseUNet, Diffusion
+from hydropfn.models.diffusion import (DenoiseUNet, Diffusion,
+                                       harmonic_torch)
 from hydropfn.paths import LOGS
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,6 +60,39 @@ def load_levels(specs):
         print(f"  {path.split('/')[-1]:26s} {len(a):6,d} patches  "
               f"{mpp:>5.0f} m/px  {km:>5.1f} km")
     return np.concatenate(P), np.concatenate(S), np.concatenate(src)
+
+
+def sample_holes_orig(n, size, rng, device):
+    """The hole distribution the SUCCESSFUL sampler trained on: modest
+    squares (size/8..size/3, i.e. ~1.5-11% of the patch) and stroke masks.
+    Ported from make_mask in dem_foundation/src/lib/inpaint.py.
+
+    My replacement distribution hid up to 25% of the area in one block and
+    hid ~90% of the patch on a fifth of draws. For holes that large the
+    conditional mean -- a blur -- IS the loss-optimal answer, so the model was
+    being trained toward the exact failure mode the sampler exists to avoid.
+    Hole size is task design, not a nuisance parameter.
+    """
+    m = np.ones((n, size, size), dtype=np.float32)
+    for i in range(n):
+        if rng.random() < 0.5:                              # square
+            h = int(rng.integers(size // 8, size // 3))
+            r0 = int(rng.integers(0, size - h))
+            c0 = int(rng.integers(0, size - h))
+            m[i, r0:r0 + h, c0:c0 + h] = 0.0
+        else:                                               # strokes
+            x, y = (int(v) for v in rng.integers(0, size, 2))
+            w = int(rng.integers(3, 9))
+            for _ in range(int(rng.integers(12, 30))):
+                ang = rng.uniform(0, 2 * np.pi)
+                ln = int(rng.integers(5, 20))
+                for t in range(ln):
+                    xx = int(np.clip(x + t * np.cos(ang), 0, size - 1))
+                    yy = int(np.clip(y + t * np.sin(ang), 0, size - 1))
+                    m[i, max(0, yy - w):yy + w, max(0, xx - w):xx + w] = 0.0
+                x = int(np.clip(x + ln * np.cos(ang), 0, size - 1))
+                y = int(np.clip(y + ln * np.sin(ang), 0, size - 1))
+    return torch.tensor(m, device=device).unsqueeze(1)
 
 
 def sample_holes(n, size, rng, device):
@@ -97,12 +131,20 @@ def main(a):
     P, S, src = load_levels(specs)
     print(f"  TOTAL {len(P):,} patches\n")
 
-    # PER-PATCH normalisation. Absolute elevation differs by kilometres across
-    # CONUS and would dominate the loss; the model should learn FORM. The
-    # scale token carries the physical extent that normalisation removes.
-    mu = P.mean((1, 2), keepdims=True)
-    sd = P.std((1, 2), keepdims=True) + 1e-6
-    Z = (P - mu) / sd
+    if a.valid_norm:
+        # Mean-removed RAW metres; the per-sample normalisation happens after
+        # the mask is drawn, from VALID pixels only -- exactly what inference
+        # can see. Whole-patch normalisation leaks the hole's own statistics
+        # into the input (and at eval time leaks truth), which the original
+        # sampler's v0->v1 fix documented as costing metres on high-relief
+        # patches. STD_FLOOR stops a near-flat patch being amplified.
+        Z = P - P.mean((1, 2), keepdims=True)
+    else:
+        # PER-PATCH normalisation. Absolute elevation differs by kilometres
+        # across CONUS and would dominate the loss.
+        mu = P.mean((1, 2), keepdims=True)
+        sd = P.std((1, 2), keepdims=True) + 1e-6
+        Z = (P - mu) / sd
 
     n = len(Z)
     perm = rng.permutation(n)
@@ -118,6 +160,11 @@ def main(a):
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=a.lr, total_steps=a.steps, pct_start=0.05)
 
+    # EMA: the original sampler kept an exponential moving average of the
+    # weights and EVALUATED the EMA, not the raw weights. Standard for
+    # diffusion sample quality; its absence was one of the ported-recipe gaps.
+    ema = ({k_: v_.detach().clone() for k_, v_ in net.state_dict().items()}
+           if a.ema > 0 else None)
     Zt = torch.tensor(Z)
     St = torch.tensor(S)
     t0 = time.time()
@@ -131,25 +178,67 @@ def main(a):
             # Same reasoning as modality dropout elsewhere in this project.
             k = (torch.rand(len(sc), 1, device=DEVICE) > a.scale_dropout)
             sc = sc * k
-        m = sample_holes(len(b), Z.shape[-1], rng, DEVICE)
-        loss = diff.loss_cond(net, x0, m, scale=sc)
+        holes = sample_holes_orig if a.orig_masks else sample_holes
+        m = holes(len(b), Z.shape[-1], rng, DEVICE)
+        if a.valid_norm:
+            v = m.sum(dim=(1, 2, 3), keepdim=True).clamp(min=1.0)
+            mu_ = (x0 * m).sum(dim=(1, 2, 3), keepdim=True) / v
+            sd_ = ((((x0 - mu_) * m) ** 2).sum(dim=(1, 2, 3), keepdim=True)
+                   / v).sqrt().clamp(min=a.std_floor)
+            x0 = (x0 - mu_) / sd_
+        if a.residual:
+            # RESIDUAL PARAMETERISATION. Predict the field MINUS its
+            # harmonic fill, with the harmonic handed over as the
+            # conditioning channel. Harmonic is provably the flattest
+            # surface matching the boundary, so it already carries the
+            # smooth part; the net then only has to produce TEXTURE, and
+            # cannot score well by predicting zero the way it can when
+            # predicting the field directly. Without this the plain
+            # multi-scale model reached psd_ratio 0.141 against a target
+            # of 1.0 -- a blur that still beat harmonic (0.017) because
+            # harmonic is maximally smooth.
+            h = harmonic_torch(x0 * m, m)
+            loss = diff.loss_cond(net, x0 - h, m, cond=h, scale=sc)
+        else:
+            loss = diff.loss_cond(net, x0, m, scale=sc)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step(); sched.step()
+        if a.ema > 0:
+            with torch.no_grad():
+                for k_, v_ in net.state_dict().items():
+                    ema[k_].mul_(a.ema).add_(v_, alpha=1 - a.ema)
         if step % a.log_every == 0 or step == 1:
             net.eval()
             with torch.no_grad():
                 vb = va[:a.batch]
                 vm = sample_holes(len(vb), Z.shape[-1], rng, DEVICE)
-                vl = diff.loss_cond(net, Zt[vb][:, None].to(DEVICE), vm,
-                                    scale=St[vb].to(DEVICE)).item()
+                vx = Zt[vb][:, None].to(DEVICE)
+                vsc = St[vb].to(DEVICE)
+                if a.valid_norm:
+                    vv = vm.sum(dim=(1, 2, 3), keepdim=True).clamp(min=1.0)
+                    vmu = (vx * vm).sum(dim=(1, 2, 3), keepdim=True) / vv
+                    vsd = ((((vx - vmu) * vm) ** 2)
+                           .sum(dim=(1, 2, 3), keepdim=True)
+                           / vv).sqrt().clamp(min=a.std_floor)
+                    vx = (vx - vmu) / vsd
+                if a.residual:
+                    vh = harmonic_torch(vx * vm, vm)
+                    vl = diff.loss_cond(net, vx - vh, vm, cond=vh,
+                                        scale=vsc).item()
+                else:
+                    vl = diff.loss_cond(net, vx, vm, scale=vsc).item()
             net.train()
             print(f"  step {step:6d}/{a.steps}  train {loss.item():.4f}  "
                   f"val {vl:.4f}  [{(time.time()-t0)/60:.1f} min]", flush=True)
 
     out = LOGS / f"dem_ms_{a.tag}.pt"
-    torch.save({"net": net.state_dict(), "levels": a.levels,
-                "scale_cond": True}, out)
+    save = {"net": net.state_dict(), "levels": a.levels,
+            "scale_cond": True, "residual": a.residual,
+            "valid_norm": a.valid_norm}
+    if ema is not None:
+        save["ema"] = ema
+    torch.save(save, out)
     print(f"\nwrote {out}")
 
 
@@ -161,6 +250,16 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=8000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--ema", type=float, default=0.999,
+                    help="EMA decay; 0 disables. The original evaluated EMA")
+    ap.add_argument("--orig-masks", action="store_true",
+                    help="the successful sampler's hole distribution")
+    ap.add_argument("--valid-norm", action="store_true",
+                    help="normalise from VALID pixels only, after masking")
+    ap.add_argument("--std-floor", type=float, default=0.5,
+                    help="metres; a near-flat patch must not be amplified")
+    ap.add_argument("--residual", action="store_true",
+                    help="predict the residual over a harmonic fill")
     ap.add_argument("--scale-dropout", type=float, default=0.1)
     ap.add_argument("--log-every", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
