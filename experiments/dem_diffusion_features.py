@@ -141,9 +141,20 @@ def extract(a):
                                             n_draws=a.n_draws, scale=sc))
     F = np.full((len(ok), F_ok.shape[1]), np.nan, dtype=np.float32)
     F[ok] = F_ok
+    # PROVENANCE. A feature file that does not record how it was made is
+    # unfalsifiable -- the wrong-extractor episode (OOD checkpoint, dropped
+    # scale, raw instead of EMA weights) was only reconstructable from shell
+    # history. Everything needed to reproduce or audit the extraction is now
+    # in the artifact itself.
     np.savez_compressed(a.extract_to, feats=F, ok=ok,
                         site_id=np.asarray(dm["site_id"]).astype(str),
-                        t_level=a.t_extract)
+                        t_level=a.t_extract, n_draws=a.n_draws,
+                        ckpt=str(a.ckpt),
+                        used_ema=bool("ema" in torch.load(
+                            a.ckpt, map_location="cpu")),
+                        scale_cond=bool(getattr(net, "scale_cond", False)),
+                        scale_mpp=a.scale_mpp, scale_km=a.scale_km,
+                        dem_source=str(a.dem))
     print(f"wrote {a.extract_to}: {ok.sum()} sites x {F_ok.shape[1]} features "
           f"at t={a.t_extract}")
 

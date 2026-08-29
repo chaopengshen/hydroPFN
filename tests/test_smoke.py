@@ -199,3 +199,41 @@ def test_connector_geo_responds_to_distance():
     near[:, 0] = far[:, 0] = 0.0                 # query at the origin in both
     with torch.no_grad():
         assert not torch.allclose(c(tok, sv, near), c(tok, sv, far), atol=1e-4)
+
+
+def test_extractor_scale_conditioning_is_live():
+    """The wrong-extractor episode, pinned as a test.
+
+    Three behavioral facts that must hold or the extraction is silently wrong
+    again: (1) for a scale-conditioned net, changing the scale vector changes
+    the features; (2) omitting it changes them too (the 10%-dropout regime is
+    a DIFFERENT regime, which is exactly what the buggy extractor fed on);
+    (3) for a non-scale net the argument is inert, so passing it can never
+    corrupt an old checkpoint's features.
+    """
+    import numpy as np
+    import torch
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "experiments"))
+    from dem_diffusion_features import diffusion_features
+    from hydropfn.models.diffusion import DenoiseUNet, Diffusion
+
+    torch.manual_seed(0)
+    Z = np.random.default_rng(0).normal(size=(4, 128, 128)).astype("float32")
+    diff = Diffusion(device="cpu")
+
+    net = DenoiseUNet(w=32, in_ch=3, scale_cond=True).eval()
+    s1 = torch.tensor([[2.0, 1.107]])          # 100 m/px, 12.8 km
+    s2 = torch.tensor([[1.0, 0.107]])          # 10 m/px, 1.28 km
+    torch.manual_seed(0); f1 = diffusion_features(net, diff, Z, 50, scale=s1)
+    torch.manual_seed(0); f2 = diffusion_features(net, diff, Z, 50, scale=s2)
+    torch.manual_seed(0); f0 = diffusion_features(net, diff, Z, 50, scale=None)
+    assert not np.allclose(f1, f2), "scale vector ignored"
+    assert not np.allclose(f1, f0), "scale=None indistinguishable from scaled"
+
+    plain = DenoiseUNet(w=32, in_ch=3, scale_cond=False).eval()
+    torch.manual_seed(0); g1 = diffusion_features(plain, diff, Z, 50, scale=s1)
+    torch.manual_seed(0); g0 = diffusion_features(plain, diff, Z, 50, scale=None)
+    assert np.allclose(g1, g0), "scale corrupted a non-scale checkpoint"
