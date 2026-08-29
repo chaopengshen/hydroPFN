@@ -140,7 +140,16 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
 
 def main(a):
     if a.smoke:
-        a.epochs, a.steps, a.tasks = 40, 150, 4
+        # only fill values the user did NOT explicitly override --
+        # the first version stomped an explicit --epochs 2, turning a
+        # 2-epoch smoke check into a 40-epoch x 10-fold run
+        import sys as _sys
+        if "--epochs" not in _sys.argv:
+            a.epochs = 40
+        if "--steps" not in _sys.argv:
+            a.steps = 150
+        if "--tasks" not in _sys.argv:
+            a.tasks = 4
 
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
@@ -363,6 +372,12 @@ if __name__ == "__main__":
     ap.add_argument("--retrieval", choices=["geo", "similar", "random"],
                     default="geo")
     ap.add_argument("--context-pool", choices=["all", "train"], default="all")
+    # NOTE: the fixed 137-patch (6-year) eval offset keeps historical
+    # context inside the training period for the SPATIAL protocols (eval
+    # 1995-99 -> context 1989-93). On the TEMPORAL extent late tiles would
+    # reach into the eval span; mode B there needs a per-tile multiple of
+    # 137 large enough to clear train_end. Not yet implemented -- do not
+    # run --context-period train with --extent temporal for real results.
     ap.add_argument("--context-period", choices=["current", "train"],
                     default="current",
                     help="train = MODE B: context windows are HISTORICAL, "
