@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 logs/
-data/
+# Leading slash: anchor to the repo root. As a bare `data/` this also matched
+# `src/hydropfn/data/`, which silently kept the entire loader module out of
+# the repository -- every entry point imported `hydropfn.data.forcing` and
+# none of them could run. Do not remove the slash.
+/data/
 *.npz
 *.pt
