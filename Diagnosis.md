@@ -531,3 +531,43 @@ been *trained* across three, not from being given three at inference.
 - 30 m degradation: downsample CONUS and re-probe. No new data needed.
 - within-basin patch bag (5,368 points, 8 per basin, with relative position
   and basin area) — fetched, not yet tested.
+
+---
+
+# 2026-08-28 — the anchor was the wrong checkpoint, and "the sixth element" is retracted
+
+Chasing the garbage anchor row (psd 122 in my harness) forced a checkpoint
+audit, and the metadata plus an own-harness re-run reframe the target:
+
+| checkpoint | param | own-harness psd (rerank) | identity |
+|---|---|---|---|
+| `allfix.pt` | **v** | **0.592** | the STACKED "all improvements" run |
+| `residual.pt` | **eps** | *re-running* | residual-only — the probable 0.810 champion |
+
+The dev-log's own words: the winning recipe was "residual + best-of-K", and
+the stacked run carried **two actively harmful arms** on top of it. `allfix`
+("all fixes") is that stacked run — its own harness scores it 0.592, not
+0.810.
+
+**Consequences, in order of severity:**
+
+1. **"v-prediction was the sixth lost element" is RETRACTED.** v was in the
+   stacked run, i.e. plausibly one of the HARMFUL arms — and my own parity
+   ablation independently agrees (parity-v: marginally better at fine scale,
+   worse at 12.8 km, unstable val). The commit that reintroduced v as part of
+   "the winning recipe" came from the same summary-not-source reading that
+   lost the recipe in the first place. eps-parity is the configuration to
+   carry forward.
+
+2. **The anchor row's garbage in MY harness (psd 122) is a real harness bug,
+   separate from checkpoint identity** — allfix decodes fine in its own
+   harness. Undiagnosed: schedules are byte-identical, param handling is
+   proven by parity-v, the architecture load is strict. Until my harness
+   reproduces an external checkpoint, cross-harness rows stay out of every
+   table.
+
+3. **Where the comparison actually stands** (fine-scale psd, cross-harness so
+   approximate): no-recipe multi-scale 0.45 → parity-eps best-of-8 **0.64**;
+   allfix single-scale stacked 0.59; recorded champion **0.810** (residual.pt,
+   repro pending). We have caught the stacked run and remain **well short of
+   the champion**. Not recovered.
