@@ -622,3 +622,30 @@ Lesson count for this anchor hunt alone: wrong checkpoint (allfix), wrong
 n-eval (mine), one real harness bug (psd 122, still open), and one false
 accusation against a sound record. Every one was a protocol error, and every
 one was caught by re-measuring rather than reasoning.
+
+## Resolution: shared protocol run — recovered, and exceeded
+
+`eval_external.py` (a surgical one-block patch of the original harness — the
+ckpt loader infers width/in_ch from weights and freezes the scale conditioning
+at the corpus's true 10 m / 1.28 km; the eval protocol is byte-identical, same
+seed, so the draw is the SAME 60 tiles and masks as the champion's 0.824 run):
+
+| model (bo8 rerank) | elev | psd | vario10 | vario80 |
+|---|---|---|---|---|
+| champion `residual.pt` (single-scale) | 1.154 | 0.824 | 0.838 | 0.964 |
+| **parity-eps (multi-scale)** | **1.130** | **0.937** | **0.842** | 0.959 |
+| parity-v (multi-scale) | 1.011 | 0.806 | 0.814 | 0.961 |
+| harmonic | 2.028 | 0.175 | 0.376 | 0.529 |
+
+**The multi-scale model beats the single-scale champion at the fine scale on
+the champion's own protocol** — psd 0.937 vs 0.824, variograms tied — while
+additionally serving 12.8 km and 51.2 km from the same scale-conditioned
+weights. Multi-scale training cost nothing at the fine scale and plausibly
+helped (cross-scale exposure as augmentation). parity-v confirms once more
+that v-prediction is not needed.
+
+Every earlier "still lacking" reading was measurement, not model: my hole
+distribution (worth ~0.2), my n-eval subset (worth ~0.2), and my mask port.
+The same checkpoint that scores 0.636 in my harness scores 0.937 in the
+original's. **The recipe restoration is complete; the open item is my
+harness's external-checkpoint decode bug, which no longer gates anything.**
