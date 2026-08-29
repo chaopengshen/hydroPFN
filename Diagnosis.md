@@ -597,3 +597,28 @@ covers 12.8 km and 51.2 km (psd ~0.51-0.55) from one scale-conditioned net,
 which the single-scale champion cannot do at all. Against the recorded-but-
 unreproducible 0.810, still short; that number should no longer be quoted
 without its (lost) protocol.
+
+## Correction, same day: the record did NOT drift — my flag did
+
+Re-run at the recorded protocol (`--n-eval 60`, defaults): `residual.pt`
+scores **psd 0.824, vario10 0.838, vario80 0.964**, and harmonic's elev is
+**2.028 — exactly the recorded value**. Corpus, metrics and eval code all
+predate the checkpoints on disk; nothing changed. The "protocol drift" in the
+previous addendum was **my own `--n-eval 40`**, worth 0.19 of psd via a
+smaller, rougher-median eval subset. That addendum's claim is retracted: the
+0.810 record is sound and reproducible.
+
+**Corrected standing:** the champion reproduces at **0.824**; our multi-scale
+parity-eps measures **0.636** — but on MY eval set (32 val patches, ported
+masks), not the champion's 60 held-out tiles. The same subset effect that
+just fooled me (residual.pt: 0.633 at n=40 vs 0.824 at n=60) means these two
+numbers are NOT directly comparable, in either direction. The recovery
+question is therefore OPEN, not answered: settling it requires one shared
+protocol — either fix the external-checkpoint decode bug in my harness and
+score both models on identical patches and masks, or evaluate the parity
+checkpoint inside the original harness.
+
+Lesson count for this anchor hunt alone: wrong checkpoint (allfix), wrong
+n-eval (mine), one real harness bug (psd 122, still open), and one false
+accusation against a sound record. Every one was a protocol error, and every
+one was caught by re-measuring rather than reasoning.
