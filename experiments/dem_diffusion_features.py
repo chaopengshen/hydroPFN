@@ -43,7 +43,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @torch.no_grad()
-def diffusion_features(net, diff, Z, t_level, batch=64, n_draws=1):
+def diffusion_features(net, diff, Z, t_level, batch=64, n_draws=1,
+                       scale=None):
     """Activations at several depths, mean+std pooled -> (N, F)."""
     # AVERAGE OVER NOISE DRAWS. q_sample injects a random field, so a single
     # draw makes each site's features a stochastic SAMPLE rather than an
@@ -58,14 +59,14 @@ def diffusion_features(net, diff, Z, t_level, batch=64, n_draws=1):
         t = torch.full((n,), int(t_level), device=DEVICE, dtype=torch.long)
         acc = None
         for _ in range(n_draws):
-            f = _one_draw(net, diff, x0, t)
+            f = _one_draw(net, diff, x0, t, scale)
             acc = f if acc is None else acc + f
         feats.append((acc / n_draws).float().cpu().numpy())
     return np.concatenate(feats)
 
 
 @torch.no_grad()
-def _one_draw(net, diff, x0, t):
+def _one_draw(net, diff, x0, t, scale=None):
         noise = torch.randn_like(x0)
         xt = diff.q_sample(x0, t, noise)
         if net.inp.in_channels == 3:
@@ -74,6 +75,11 @@ def _one_draw(net, diff, x0, t):
             m = torch.ones_like(xt)
             xt = torch.cat([xt, x0 * m, m], 1)
         e = net.temb(t)
+        if scale is not None and getattr(net, 'scale_cond', False):
+            # a scale-conditioned net extracted WITHOUT its scale vector
+            # runs in its 10%-dropout regime -- legal but not the regime
+            # it was trained to use. Pass the corpus's true scale.
+            e = e + net.smlp(scale.expand(x0.shape[0], -1).to(e.dtype))
         h1 = net.d1(net.inp(xt), e)
         h2 = net.d2(torch.nn.functional.avg_pool2d(h1, 2), e)
         h3 = net.d3(torch.nn.functional.avg_pool2d(h2, 2), e)
@@ -108,9 +114,11 @@ BASE = ["log_A_drain", "log_slope", "slope_at_floor", "sinuosity",
 
 def load_net(ckpt):
     ck = torch.load(ckpt, map_location=DEVICE)
-    sd = ck.get("net", ck.get("model", ck))
+    sd = ck.get("ema", ck.get("net", ck.get("model", ck)))
     net = DenoiseUNet(w=sd["inp.weight"].shape[0],
-                      in_ch=sd["inp.weight"].shape[1]).to(DEVICE)
+                      in_ch=sd["inp.weight"].shape[1],
+                      scale_cond=any(k.startswith("smlp.") for k in sd)
+                      ).to(DEVICE)
     net.load_state_dict(sd)
     net.eval()
     return net
@@ -124,9 +132,13 @@ def extract(a):
     Z = Z - Z.mean((1, 2), keepdims=True)
     Z = Z / (Z.std((1, 2), keepdims=True) + 1e-6)
     net, diff = load_net(a.ckpt), Diffusion(device=DEVICE)
+    sc = None
+    if a.scale_mpp > 0:
+        sc = torch.tensor([[np.log10(a.scale_mpp), np.log10(a.scale_km)]],
+                          device=DEVICE, dtype=torch.float32)
     torch.manual_seed(0)
     F_ok = np.nan_to_num(diffusion_features(net, diff, Z, a.t_extract,
-                                            n_draws=a.n_draws))
+                                            n_draws=a.n_draws, scale=sc))
     F = np.full((len(ok), F_ok.shape[1]), np.nan, dtype=np.float32)
     F[ok] = F_ok
     np.savez_compressed(a.extract_to, feats=F, ok=ok,
@@ -223,6 +235,10 @@ if __name__ == "__main__":
     ap.add_argument("--target", default="log_W", choices=["log_W", "log_d"])
     ap.add_argument("--extract-to", default=None,
                     help="write features for every site in --dem and exit")
+    ap.add_argument("--scale-mpp", type=float, default=0,
+                    help="metres per pixel of this corpus (0 = no scale)")
+    ap.add_argument("--scale-km", type=float, default=0,
+                    help="footprint km of this corpus")
     ap.add_argument("--n-draws", type=int, default=8,
                     help="average features over this many noise draws; "
                          "1 makes them a stochastic sample, not an "
