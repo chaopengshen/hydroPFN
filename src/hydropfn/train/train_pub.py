@@ -300,6 +300,10 @@ def main(a):
     mu = np.nanmean(np.where(valid[tr], X[tr], np.nan), axis=(0, 1))
     sd = np.nanstd(np.where(valid[tr], X[tr], np.nan), axis=(0, 1)) + 1e-6
     Xs = np.nan_to_num((X - mu) / sd)
+    # captured as scalars NOW: `sd` is later shadowed by the --load
+    # checkpoint state dict, which is how the raw-NSE inversion first
+    # crashed (KeyError: 5 = indexing a state dict with obs_col)
+    obs_mu, obs_sd = float(mu[-1]), float(sd[-1])
     am, asd = A_[tr].mean(0), A_[tr].std(0) + 1e-6
     A_s = np.nan_to_num((A_ - am) / asd).astype(np.float32)
 
@@ -692,9 +696,20 @@ def main(a):
                 print(f"      lead {d+1:2d} d: per-basin median NSE "
                       f"{m_:+.4f} ({f_:.0%} > 0)", flush=True)
         med, frac, nb = nse_per_site(ys, ps)
+        # RAW-SPACE NSE (Kraabel correction, 2026-08-29). Everything above is
+        # computed on log1p(Q), z-scored -- log-NSE and raw NSE weight flows
+        # differently and NEITHER BOUNDS THE OTHER, so only the raw number may
+        # ever sit beside a published CAMELS value. Invert the exact forward
+        # transform: z -> log1p (undo train-stats affine) -> expm1 -> mm/day.
+        _inv = lambda v: np.expm1(np.clip(
+            np.asarray(v, dtype=np.float64) * obs_sd + obs_mu,
+            None, 20.0))
+        med_raw, frac_raw, _ = nse_per_site([_inv(y_) for y_ in ys],
+                                            [_inv(p_) for p_ in ps])
         rec_row = {"K": K, "n": int(_y.size), "model": r2(_y, _p),
                    "model_patch16": r2(_ya, _pa),
-                   "nse_median": med, "nse_frac_pos": frac, "n_basins": nb}
+                   "nse_median": med, "nse_frac_pos": frac,
+                   "nse_median_raw": med_raw, "n_basins": nb}
         if K > 0:
             rec_row["nn_donor"] = r2(np.concatenate(ys), np.concatenate(nn_ps))
             rec_row["ctx_mean"] = r2(np.concatenate(ys), np.concatenate(cm_ps))
@@ -705,7 +720,8 @@ def main(a):
         rows.append(rec_row)
         print(f"  K={K:3d}  pooled-daily {rec_row['model']:+.4f}"
               f"  16d {rec_row['model_patch16']:+.4f}"
-              f"  | per-basin NSE med {med:+.4f} ({frac:.0%} of {nb} > 0)"
+              f"  | NSE med log {med:+.4f} RAW {med_raw:+.4f} "
+              f"({frac:.0%} of {nb} > 0)"
               + (f"  | IDW {rec_row['idw_nse']:+.4f}" if K > 0 else "")
               + (f"   nn_donor {rec_row['nn_donor']:+.4f}"
                  f"   ctx_mean {rec_row['ctx_mean']:+.4f}" if K > 0 else ""),
