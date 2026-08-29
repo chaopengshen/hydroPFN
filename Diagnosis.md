@@ -571,3 +571,29 @@ the stacked run carried **two actively harmful arms** on top of it. `allfix`
    allfix single-scale stacked 0.59; recorded champion **0.810** (residual.pt,
    repro pending). We have caught the stacked run and remain **well short of
    the champion**. Not recovered.
+
+## Addendum, same day: the champion re-measured, and where we actually stand
+
+`residual.pt` own-harness, today's eval draw: **psd 0.633, vario10 0.828,
+vario80 0.927** (rerank). The recorded 0.810 does NOT reproduce — and the
+harmonic baseline moved with it (elev 2.95 today vs 2.03 recorded), so the
+drift is in the EVALUATION PROTOCOL (patch subset / mask draw), not the
+checkpoint. Even the historical anchor is protocol-bound. Every anchor
+number must carry its eval draw.
+
+**The honest recovery table** (fine scale; cross-harness but both on
+original-style holes):
+
+| | psd | vario10 | vario80 |
+|---|---|---|---|
+| champion `residual.pt`, own harness, today | 0.633 | 0.828 | 0.927 |
+| **ours: multi-scale parity-eps, best-of-8** | **0.636** | 0.741 | 0.899 |
+| stacked `allfix.pt`, own harness | 0.592 | 0.749 | 0.917 |
+| ours, no recipe (ms1) | 0.451 | 0.740 | 0.818 |
+
+Against the champion as it measures TODAY: **psd matched (0.636 vs 0.633),
+vario80 close (−0.03), vario10 short by −0.09** — and ours additionally
+covers 12.8 km and 51.2 km (psd ~0.51-0.55) from one scale-conditioned net,
+which the single-scale champion cannot do at all. Against the recorded-but-
+unreproducible 0.810, still short; that number should no longer be quoted
+without its (lost) protocol.
