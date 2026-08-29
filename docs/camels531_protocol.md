@@ -145,6 +145,14 @@ The reference values, on the identical protocol, 3-seed means, from
 | Embedding adapter (Stefaland, Annually) | 0.706 | 0.627 |
 | Condensed embedding (Stefaland, daily) | 0.721 | 0.638 |
 
+Published values on the same 531 basins, for wider context — **different
+forcing, so not same-protocol**: Feng et al. (2023, HESS), Maurer forcing:
+δHBV 0.64 PUB / 0.59 PUR, LSTM 0.65 PUB / 0.55 PUR; temporal (NLDAS, Feng
+et al. 2022) δHBV 0.711, LSTM 0.719. Jamaat et al. (2025), Daymet, temporal
+1989–99: δHBV1.1p 0.75, LSTM 0.74 (no DA). Only the dmg rows above share
+this page's exact protocol; the published rows differ in forcing and/or
+period and are context, not a leaderboard.
+
 For `camels531_pub.py`, **K=0 is the row comparable to the LSTM.** K>0
 additionally reads neighbouring gauges' concurrent discharge at inference,
 which an LSTM structurally cannot do, and must be read against the `nn`,
