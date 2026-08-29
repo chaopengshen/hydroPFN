@@ -172,3 +172,31 @@ be stated:
 * the LSTM is **causal**; PUBModel is a bidirectional smoother unless run with
   `--causal`.
 * PUBModel reads context basins' **concurrent discharge**; the LSTM cannot.
+
+
+---
+
+## The full suite (2026-08-29, in progress)
+
+Training protocol changed twice (raw-mm/day metric; converged budget — the
+old defaults were smoke-test-sized and are now raised, `--smoke` restores
+them), so every claim is being re-earned here. Four questions, each with its
+reference row on THIS protocol:
+
+| # | question | ours | reference | status |
+|---|---|---|---|---|
+| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | e800 PUB running; fold-0 K=0 **0.630** | LSTM 0.666 · LSTM+dHBV1.1p 0.700 | ~overnight |
+| ii | mode B (historical, DOY-aligned) vs IDW-on-history | ported this commit (`--context-period train`) | IDW on the same historical window | queued |
+| iii | recent-obs stream (own gauge to t−lag) vs LSTM | needs stride-1 tail scoring in the day-buffer | LSTM temporal 0.692 | to build |
+| iv | context + recent-obs combined vs LSTM / dHBV | same machinery as iii + K>0 | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) | to build |
+
+Provisional trajectory that motivated the budget change (PUB spatial, K=0
+median NSE): e40 **0.265** → e200 **~0.50** (5 folds) → e800 fold-0 **0.630**
+— still climbing at 32× the original default budget. The context gain shrinks
+correspondingly (fold-0: +0.14 at e200 → +0.06 at e800): concurrent
+neighbours were partly compensating for an undertrained forward arm.
+
+Mode B's port carries the baseline discipline from train_pub: donor baselines
+read the HISTORICAL context window, never the eval slice — reading the eval
+slice hands them concurrent discharge the model was denied, which reversed a
+mode-B table once already.

@@ -75,7 +75,7 @@ def tile_starts(span_days, patch, win):
 
 def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                    geo_rank, nn_rank, latlon, area, p0, starts, span_days,
-                   obs_col):
+                   obs_col, ctx_off=None):
     """Predicted QObs for `te_idx` over the eval span, indexed by DAY.
 
     Returns (n_basins, span_days) on the STANDARDISED scale, plus the donor
@@ -104,7 +104,8 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                     Xp, A_s, valid_p, doy, int(q), ctx_pool, K, erng, a.win,
                     obs_col, a.retrieval, nn_rank, fixed_start=p0 + st,
                     geo_rank=geo_rank, latlon=latlon if a.geo else None,
-                    area=area if a.area_scale else None)
+                    area=area if a.area_scale else None,
+                    ctx_start=(p0 + st - ctx_off) if ctx_off else None)
                 tasks.append(t)
                 metas.append((int(q), sites, sl))
             b = collate(tasks)
@@ -115,7 +116,15 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                 buf["p"][i, d0:d0 + wd] = \
                     rec[j][:, obs_col, :].cpu().numpy().ravel()
                 if K > 0:
-                    nb = Xp[sites[1:], sl][..., obs_col, :]   # (K, win, patch)
+                    # Baselines must read the SAME window the model's
+                    # context read: for mode B that is the HISTORICAL
+                    # window, not the eval slice -- else they are handed
+                    # concurrent discharge the model was denied (the bug
+                    # fixed in train_pub 2026-08-22, reintroduced by the
+                    # port until this line).
+                    csl = (slice(sl.start - ctx_off, sl.stop - ctx_off)
+                           if ctx_off else sl)
+                    nb = Xp[sites[1:], csl][..., obs_col, :]  # (K,win,patch)
                     buf["nn"][i, d0:d0 + wd] = nb[0].ravel()
                     buf["cm"][i, d0:d0 + wd] = nb.mean(0).ravel()
                     rel = latlon[sites[1:]] - latlon[sites[0]]
@@ -130,6 +139,9 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
 
 
 def main(a):
+    if a.smoke:
+        a.epochs, a.steps, a.tasks = 40, 150, 4
+
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
 
@@ -351,12 +363,24 @@ if __name__ == "__main__":
     ap.add_argument("--retrieval", choices=["geo", "similar", "random"],
                     default="geo")
     ap.add_argument("--context-pool", choices=["all", "train"], default="all")
+    ap.add_argument("--context-period", choices=["current", "train"],
+                    default="current",
+                    help="train = MODE B: context windows are HISTORICAL, "
+                         "same-DOY whole-year offsets (align draw in "
+                         "training, fixed 137-patch offset at eval)")
     ap.add_argument("--k-train", default="0,0,0,1,2,4,8,16")
     ap.add_argument("--k-eval", default="0,4")
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--epochs", type=int, default=40)
+    # DEFAULTS ARE THE CONVERGED BUDGET. The old 40/150/4 (24k task-views)
+    # were smoke-test defaults from train_pub.py, sized for 5-minute
+    # architecture debugging; the converged budget only ever lived in
+    # command-line overrides, so every run at defaults reproduced the
+    # undertrained regime (K=0 0.265 at e40 vs 0.63+ at e800, fold 0).
+    ap.add_argument("--smoke", action="store_true",
+                    help="tiny debugging budget (the old defaults)")
+    ap.add_argument("--epochs", type=int, default=800)
     ap.add_argument("--steps", type=int, default=150)
-    ap.add_argument("--tasks", type=int, default=4, help="tasks per step")
+    ap.add_argument("--tasks", type=int, default=8, help="tasks per step")
     ap.add_argument("--batch", type=int, default=8, help="basins per eval batch")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-folds", type=int, default=0)

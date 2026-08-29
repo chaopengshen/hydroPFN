@@ -760,9 +760,11 @@ if __name__ == "__main__":
                     help="'all' lets a held-out query use OTHER basins in its "
                          "own region as context -- not leakage, since the "
                          "model never trained on them and those gauges exist")
-    ap.add_argument("--epochs", type=int, default=40)
-    ap.add_argument("--steps", type=int, default=150)
-    ap.add_argument("--batch", type=int, default=4)
+    # Converged-budget defaults (see camels531_pub.py for the history of
+    # how smoke-test defaults escaped into a benchmark).
+    ap.add_argument("--epochs", type=int, default=160)
+    ap.add_argument("--steps", type=int, default=300)
+    ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--eval-start", type=int, default=200,
                     help="evaluation window start, in PATCHES")
