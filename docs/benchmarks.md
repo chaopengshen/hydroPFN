@@ -1,3 +1,5 @@
+> **DEPRECATED for external comparison (2026-08-29).** Every NSE on this page is computed on `log1p(QObs)`, z-scored — NOT raw mm/day — on a 671-basin protocol of this project's own invention. None of it may sit in a table with a published CAMELS value. The verified protocol and metric live in [camels531_protocol.md](camels531_protocol.md). Internal comparisons on this page (ours-vs-ours, shared protocol) remain valid.
+
 # Benchmarks — what we compare to, how to run it, how to verify the split
 
 All numbers are **median per-basin NSE**. Pooled R² is also reported by the

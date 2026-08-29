@@ -94,6 +94,17 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     #                      time-aligned attention is meaningless here by
     #                      construction, since patch n of the query and patch n
     #                      of the context are different weeks.
+    if ctx_start == "align":
+        # SEASONALLY ALIGNED historical context: same day-of-year, earlier
+        # years. 137 patches x 16 d = 2,192 d = 6.001 years (0.5 d drift),
+        # the closest whole-patch multiple of the year. The original mode-B
+        # offset (200 patches = 8.76 yr) was ~88 days OFF-season, so the
+        # time-aligned path matched query patches against a different
+        # season -- a plausible reason historical context measured as
+        # worthless (+0.005). "Same season, earlier years" is real
+        # hydrologic information; "a random season some years ago" is not.
+        j = int(rng.integers(1, max(2, s // 137 + 1)))
+        ctx_start = max(0, s - 137 * j)
     if ctx_start is None:
         ser = Xp[sites][:, sl]
         val = valid_p[sites][:, sl]
@@ -457,9 +468,11 @@ def main(a):
             for _ in range(a.batch):
                 q = int(rng.choice(tr))
                 pool = tr[tr != q]
-                cs = (int(rng.integers(0, max(1, (train_end_patch or
-                                                  Xp.shape[1] - a.win))))
-                      if a.context_period == "train" else None)
+                cs = None
+                if a.context_period == "train":
+                    cs = ("align" if a.ctx_align else
+                          int(rng.integers(0, max(1, (train_end_patch
+                              or Xp.shape[1] - a.win)))))
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
                                      a.win, obs_col, a.retrieval, nn_rank,
                                      geo_rank=geo_rank_train,
@@ -596,8 +609,12 @@ def main(a):
                 chunk = te[i0:i0 + a.batch]
                 tasks, metas = [], []
                 for q in chunk:
-                    cs = (a.context_train_start if a.context_period == "train"
-                          else None)
+                    cs = None
+                    if a.context_period == "train":
+                        # aligned eval: exactly 6 years before the
+                        # eval window, same season, inside training
+                        cs = (a.eval_start - 137 if a.ctx_align
+                              else a.context_train_start)
                     t, sites, sl = build_task(
                         Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
@@ -740,6 +757,9 @@ if __name__ == "__main__":
                     help="'current': context shares the query window -- data "
                          "assimilation. 'train': context comes from the "
                          "training period -- long-term conditioning only")
+    ap.add_argument("--ctx-align", action="store_true",
+                    help="historical context at same-DOY offsets "
+                         "(137-patch = whole-year multiples)")
     ap.add_argument("--context-train-start", type=int, default=100,
                     help="patch index for context when --context-period train")
     ap.add_argument("--train-end", type=int, default=None,
