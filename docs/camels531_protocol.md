@@ -145,13 +145,24 @@ The reference values, on the identical protocol, 3-seed means, from
 | Embedding adapter (Stefaland, Annually) | 0.706 | 0.627 |
 | Condensed embedding (Stefaland, daily) | 0.721 | 0.638 |
 
+**Temporal reference, exact-protocol (added 2026-08-30):** dHBV1.1p
+(Song et al. 2026, WRR), run from the released dMG config
+(`config_dhbv_1_1p.yaml`, seed 111111, ep50, 16-multiplier HBV + LSTM
+parameterization): 531 basins, train 1980-10-01…1995-09-30, test
+1995-10-01…2010-09-30, 365-day warmup, mm/day, dmg `Metrics` — the same
+period, basins, metric and code path as this page's temporal extent.
+**Median NSE 0.7431**, KGE 0.767, Corr 0.880, FHV −4.2 % (metrics summary
+supplied by CS, 2026-08-30). This is a *gauged* temporal benchmark: every
+test basin is in training.
+
 Published values on the same 531 basins, for wider context — **different
 forcing, so not same-protocol**: Feng et al. (2023, HESS), Maurer forcing:
 δHBV 0.64 PUB / 0.59 PUR, LSTM 0.65 PUB / 0.55 PUR; temporal (NLDAS, Feng
 et al. 2022) δHBV 0.711, LSTM 0.719. Jamaat et al. (2025), Daymet, temporal
-1989–99: δHBV1.1p 0.75, LSTM 0.74 (no DA). Only the dmg rows above share
-this page's exact protocol; the published rows differ in forcing and/or
-period and are context, not a leaderboard.
+1989–99: δHBV1.1p 0.75, LSTM 0.74 (no DA) — consistent with the 0.743
+exact-protocol row above. Only the dmg rows share this page's exact
+protocol; the published rows differ in forcing and/or period and are
+context, not a leaderboard.
 
 For `camels531_pub.py`, **K=0 is the row comparable to the LSTM.** K>0
 additionally reads neighbouring gauges' concurrent discharge at inference,
@@ -187,15 +198,17 @@ reference row on THIS protocol:
 |---|---|---|---|---|
 | i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW); mode-B-trained K=0 goes higher still (0.707, row ii) |
 | ii | mode B (historical, DOY-aligned) vs IDW-on-history | **K=0 0.7071 · K=8 0.7084** (all 10 folds) | historical IDW **−0.44 to −0.51** (worthless) · concurrent IDW 0.645 | **DONE — the training draw is the prize**: mode-B-trained K=0 **beats LSTM+dHBV1.1p** (0.707 vs 0.700); eval-time historical context adds only +0.001 |
-| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037**; lead-1 does NOT close it (no lead decay, see below) |
-| iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, +0.15 IDW) |
+| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal 0.692 · **dHBV1.1p 0.743** (exact protocol) | **DONE — short by 0.037 / 0.088**; lead-1 does NOT close it (no lead decay, see below) |
+| iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · **dHBV1.1p 0.743 (exact protocol)** · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, **+0.043 dHBV1.1p**, +0.15 IDW) |
 
 **(iii)/(iv) detail** (temporal, e800, `--self-ctx-p 0.4 --recent-obs 1`,
 stride-1 final-patch scoring — every day predicted from beyond the
 observation cutoff): own gauge alone at 1–16-day lag does NOT reach the
-gauged LSTM (0.655 vs 0.692). Adding concurrent neighbours flips it
-decisively: **0.786 vs LSTM 0.692**, and +0.027 over the concurrent-only
-e200 run. Donor baselines: nn 0.537, ctx_mean 0.53–0.58, IDW 0.61–0.63.
+gauged LSTM (0.655 vs 0.692) nor the gauged dHBV1.1p (0.743). Adding
+concurrent neighbours flips it decisively: **0.786 vs LSTM 0.692 and
+dHBV1.1p 0.743** — the latter on its own exact benchmark period, basins and
+metric — and +0.027 over the concurrent-only e200 run. Donor baselines:
+nn 0.537, ctx_mean 0.53–0.58, IDW 0.61–0.63.
 
 **Lead-1 readout (2026-08-30): the −0.037 gap is real, not a lag artifact.**
 By-lead NSE from the saved predictions (buffer day *d* was predicted at lead
