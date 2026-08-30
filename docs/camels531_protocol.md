@@ -187,17 +187,35 @@ reference row on THIS protocol:
 |---|---|---|---|---|
 | i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW) |
 | ii | mode B (historical, DOY-aligned) vs IDW-on-history | folds 0–6: K=0 0.66–0.75, per-fold context gain +0.006–0.017 | historical IDW at aggregate | 7/10 folds; mode-B *training* keeps lifting K=0 |
-| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037** at patch-16 lag |
+| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037**; lead-1 does NOT close it (no lead decay, see below) |
 | iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, +0.15 IDW) |
 
 **(iii)/(iv) detail** (temporal, e800, `--self-ctx-p 0.4 --recent-obs 1`,
 stride-1 final-patch scoring — every day predicted from beyond the
 observation cutoff): own gauge alone at 1–16-day lag does NOT reach the
-gauged LSTM (0.655 vs 0.692; the score averages leads 1–16, so a lead-1
-readout is the fair short-lag number and remains to be extracted). Adding
-concurrent neighbours flips it decisively: **0.786 vs LSTM 0.692**, and
-+0.027 over the concurrent-only e200 run. Donor baselines: nn 0.537,
-ctx_mean 0.53–0.58, IDW 0.61–0.63.
+gauged LSTM (0.655 vs 0.692). Adding concurrent neighbours flips it
+decisively: **0.786 vs LSTM 0.692**, and +0.027 over the concurrent-only
+e200 run. Donor baselines: nn 0.537, ctx_mean 0.53–0.58, IDW 0.61–0.63.
+
+**Lead-1 readout (2026-08-30): the −0.037 gap is real, not a lag artifact.**
+By-lead NSE from the saved predictions (buffer day *d* was predicted at lead
+`(d mod 16)+1`; the extraction reproduces the recorded all-lead medians
+exactly, n=531):
+
+| | lead 1 | lead 2 | lead 4 | lead 8 | lead 16 | all leads |
+|---|---|---|---|---|---|---|
+| K=0 | 0.686 | 0.690 | 0.671 | 0.697 | 0.684 | 0.655 |
+| K=8 | 0.804 | 0.806 | 0.798 | 0.817 | 0.818 | 0.786 |
+
+There is **no lead decay**: lead 16 scores the same as lead 1 (K=0 0.684 vs
+0.686). The per-lead values sit ~0.03 above the pooled number at EVERY lead —
+a subsampling artifact (1/16 of the days per basin), not recency skill, so
+none of them may be quoted against the LSTM's all-days 0.692. The patch-16
+model predicts its block uniformly and never exploits how recent the last
+own-gauge observation is — the same conclusion the 671 protocol reached,
+where a dedicated `patch=1` specialist was worth +0.06 on this task.
+Closing (iii) at K=0 needs finer patches (or a patch-1 head), not a
+different readout.
 
 **Mode B early signal, fold 0**: historical aligned context is worth +0.014
 (the first clearly positive mode-B reading anywhere), and mode-B *training*
@@ -240,3 +258,26 @@ variable; the interpolation method is second-order. Consequence for reading
 the suite: the model's margin over IDW should be judged per density bin — the
 operationally interesting claim is holding skill where gauges are FAR, where
 interpolation collapses (0.19 beyond 67 km).
+
+### The suite judged per density bin (mode A e800, PUB spatial)
+
+Model columns from the saved e800 predictions; IDW recomputed identically to
+the table above on each basin's scored days:
+
+| nearest gauge | n | ours K=0 | ours K=4 | IDW | K=4 − IDW |
+|---|---|---|---|---|---|
+| 0–11 km | 58 | 0.765 | 0.881 | 0.838 | **+0.043** |
+| 11–22 km | 102 | 0.738 | 0.821 | 0.773 | +0.048 |
+| 22–39 km | 152 | 0.716 | 0.780 | 0.714 | +0.066 |
+| 39–67 km | 123 | 0.638 | 0.718 | 0.547 | **+0.171** |
+| >67 km | 96 | 0.465 | 0.477 | 0.187 | **+0.290** |
+| ALL | 531 | 0.682 | 0.751 | 0.657 | +0.094 |
+
+The margin over interpolation **grows monotonically with sparsity**: where
+gauges are dense the model matches IDW plus a little (+0.04 — and that is
+where the literature's ~0.9 lives), and where interpolation collapses the
+model degrades gracefully to its forward arm (K=4 0.477 ≈ K=0 0.465 vs IDW
+0.187). That is the operational claim in one table: context is exploited
+where it is informative and ignored where it is not. It is also the honest
+deflation of the aggregate +0.106-over-IDW headline — most of that margin is
+earned in the sparse half of the network.
