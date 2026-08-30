@@ -185,10 +185,25 @@ reference row on THIS protocol:
 
 | # | question | ours | reference | status |
 |---|---|---|---|---|
-| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | e800 PUB running; fold-0 K=0 **0.630** | LSTM 0.666 · LSTM+dHBV1.1p 0.700 | ~overnight |
-| ii | mode B (historical, DOY-aligned) vs IDW-on-history | ported this commit (`--context-period train`) | IDW on the same historical window | queued |
-| iii | recent-obs stream (own gauge to t−lag) vs LSTM | needs stride-1 tail scoring in the day-buffer | LSTM temporal 0.692 | to build |
-| iv | context + recent-obs combined vs LSTM / dHBV | same machinery as iii + K>0 | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) | to build |
+| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | folds 0–3: K=0 **0.675** avg (0.630/0.706/0.690/0.674) · K=4 **0.74** avg | LSTM 0.666 · LSTM+dHBV1.1p 0.700 | 4/10 folds; K=0 ≈ LSTM, K=4 beats all |
+| ii | mode B (historical, DOY-aligned) vs IDW-on-history | fold 0: K=0 0.659 → K=8 **0.673** (+0.014) | historical IDW at aggregate | 1/10 folds |
+| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037** at patch-16 lag |
+| iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, +0.15 IDW) |
+
+**(iii)/(iv) detail** (temporal, e800, `--self-ctx-p 0.4 --recent-obs 1`,
+stride-1 final-patch scoring — every day predicted from beyond the
+observation cutoff): own gauge alone at 1–16-day lag does NOT reach the
+gauged LSTM (0.655 vs 0.692; the score averages leads 1–16, so a lead-1
+readout is the fair short-lag number and remains to be extracted). Adding
+concurrent neighbours flips it decisively: **0.786 vs LSTM 0.692**, and
++0.027 over the concurrent-only e200 run. Donor baselines: nn 0.537,
+ctx_mean 0.53–0.58, IDW 0.61–0.63.
+
+**Mode B early signal, fold 0**: historical aligned context is worth +0.014
+(the first clearly positive mode-B reading anywhere), and mode-B *training*
+lifts the K=0 arm +0.03 over mode-A training on the identical fold — second
+independent sighting of aligned-historical draws acting as a forward-arm
+regularizer.
 
 Provisional trajectory that motivated the budget change (PUB spatial, K=0
 median NSE): e40 **0.265** → e200 **~0.50** (5 folds) → e800 fold-0 **0.630**
