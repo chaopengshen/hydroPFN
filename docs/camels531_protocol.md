@@ -185,8 +185,8 @@ reference row on THIS protocol:
 
 | # | question | ours | reference | status |
 |---|---|---|---|---|
-| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW) |
-| ii | mode B (historical, DOY-aligned) vs IDW-on-history | folds 0–6: K=0 0.66–0.75, per-fold context gain +0.006–0.017 | historical IDW at aggregate | 7/10 folds; mode-B *training* keeps lifting K=0 |
+| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW); mode-B-trained K=0 goes higher still (0.707, row ii) |
+| ii | mode B (historical, DOY-aligned) vs IDW-on-history | **K=0 0.7071 · K=8 0.7084** (all 10 folds) | historical IDW **−0.44 to −0.51** (worthless) · concurrent IDW 0.645 | **DONE — the training draw is the prize**: mode-B-trained K=0 **beats LSTM+dHBV1.1p** (0.707 vs 0.700); eval-time historical context adds only +0.001 |
 | iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037**; lead-1 does NOT close it (no lead decay, see below) |
 | iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, +0.15 IDW) |
 
@@ -217,11 +217,28 @@ where a dedicated `patch=1` specialist was worth +0.06 on this task.
 Closing (iii) at K=0 needs finer patches (or a patch-1 head), not a
 different readout.
 
-**Mode B early signal, fold 0**: historical aligned context is worth +0.014
-(the first clearly positive mode-B reading anywhere), and mode-B *training*
-lifts the K=0 arm +0.03 over mode-A training on the identical fold — second
-independent sighting of aligned-historical draws acting as a forward-arm
-regularizer.
+**Mode B final (2026-08-30, all 10 folds).** Three findings, in decreasing
+order of importance:
+
+1. **The training draw is the prize, not the eval-time context.** Mode-B
+   training lifts the no-context arm from 0.6820 (mode-A training) to
+   **0.7071** — past LSTM+dHBV1.1p (0.700). Aligned-historical draws act as a
+   forward-arm regularizer; this was sighted per-fold twice and now holds at
+   the aggregate (+0.025). The best no-context number in the suite comes
+   from the mode-B checkpoint.
+2. **Eval-time historical context is nearly inert**: K=8 0.7084 vs K=0
+   0.7071 (+0.001). Same-DOY flows from a 6-year offset carry climatology,
+   which the forcings already imply.
+3. **IDW-on-history is worthless** (−0.44 to −0.51 median NSE; nn −0.56):
+   interpolating wrong-year discharge is far worse than predicting the mean.
+   So "beat IDW with mode B" is trivially true; the meaningful bar is
+   CONCURRENT IDW (0.645), which even the mode-B K=0 arm clears by +0.06 —
+   an operator with no live gauges at all beating one who interpolates them.
+
+Caveat on (1): mode-A and mode-B checkpoints differ only in the context
+period of training draws, same seed/budget — but it is a single seed, and
+0.7071 vs 0.6820 is one comparison. Rerun with a second seed before making
+the regularizer claim load-bearing.
 
 Provisional trajectory that motivated the budget change (PUB spatial, K=0
 median NSE): e40 **0.265** → e200 **~0.50** (5 folds) → e800 fold-0 **0.630**
