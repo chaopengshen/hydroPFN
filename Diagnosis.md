@@ -246,6 +246,12 @@ source of the mismatch corrected on 2026-08-22.)
 | **A — assimilation** | the query's CURRENT window | 0.4684 | **0.8584** | **+0.390** |
 | **B — regionalisation** | an earlier TRAINING-period window | 0.5227 | 0.5265 | +0.004 |
 
+**Do not read the K=0 column as the forward arm's ability.** 0.4684 is the
+1×-smoke-budget artifact with K=0 drawn only 1/6 of steps — the retraction
+below takes it to 0.6066 at 5× budget, and the converged 531 runs land at
+0.682 raw (0.707 mode-B-trained). This table's value is the mode-A-vs-mode-B
+*gain* comparison at matched budget, nothing else.
+
 A neighbour's *current flow* is worth +0.39. A neighbour's *history* is worth
 ~nothing extra. The effect is real-time state, not learned similarity — which
 is why this is data assimilation, and why the time-aligned attention (which
