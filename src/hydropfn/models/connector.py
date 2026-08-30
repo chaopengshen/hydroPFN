@@ -185,7 +185,7 @@ class PUBModel(nn.Module):
         B, S = batch["vis"].shape[:2]
         flat = {k: v.reshape(B * S, *v.shape[2:]) for k, v in batch.items()
                 if k in ("attrs", "series", "vis", "valid", "doy",
-                         "attr_vis")}
+                         "attr_vis", "dem", "dem_vis")}
         out = self.encoder(flat, return_hidden=True, causal=self.causal)
 
         K = 1 + self.encoder.k

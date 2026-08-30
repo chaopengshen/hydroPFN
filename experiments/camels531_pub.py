@@ -75,7 +75,7 @@ def tile_starts(span_days, patch, win):
 
 def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                    geo_rank, nn_rank, latlon, area, p0, starts, span_days,
-                   obs_col):
+                   obs_col, ctx_off=None, recent_obs=0):
     """Predicted QObs for `te_idx` over the eval span, indexed by DAY.
 
     Returns (n_basins, span_days) on the STANDARDISED scale, plus the donor
@@ -90,6 +90,17 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
     net.eval()
     erng = np.random.default_rng(123)
     n, wd = len(te_idx), a.win * a.patch
+    if recent_obs:
+        # RECENT-OBS MODE (suite iii/iv). The query basin is added as its own
+        # context site with the last `recent_obs` patches hidden; each tile
+        # contributes ONLY its final patch, so every scored day is predicted
+        # from a tile where it lies BEYOND the observation cutoff. Tiles step
+        # by one patch (final patches tile the span exactly) and may begin
+        # before the span, drawing history from pre-eval observations -- the
+        # legitimate operational setting.
+        n_patch = span_days // a.patch
+        starts = [st for st in range(-(a.win - 1), n_patch - a.win + 1)
+                  if p0 + st >= 0]
     buf = {k: np.full((n, span_days), np.nan, np.float32)
            for k in ("p", "nn", "cm", "idw")}
     row = {int(q): i for i, q in enumerate(te_idx)}
@@ -104,7 +115,9 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                     Xp, A_s, valid_p, doy, int(q), ctx_pool, K, erng, a.win,
                     obs_col, a.retrieval, nn_rank, fixed_start=p0 + st,
                     geo_rank=geo_rank, latlon=latlon if a.geo else None,
-                    area=area if a.area_scale else None)
+                    area=area if a.area_scale else None,
+                    ctx_start=(p0 + st - ctx_off) if ctx_off else None,
+                    self_ctx=recent_obs)
                 tasks.append(t)
                 metas.append((int(q), sites, sl))
             b = collate(tasks)
@@ -112,24 +125,67 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                 rec = net(b)
             for j, (q, sites, sl) in enumerate(metas):
                 i = row[q]
-                buf["p"][i, d0:d0 + wd] = \
-                    rec[j][:, obs_col, :].cpu().numpy().ravel()
+                if recent_obs:
+                    lo = d0 + wd - recent_obs * a.patch
+                    if lo < 0:
+                        continue
+                    buf["p"][i, lo:d0 + wd] = rec[j][
+                        -recent_obs:, obs_col, :].cpu().numpy().ravel()
+                else:
+                    buf["p"][i, d0:d0 + wd] = rec[j][
+                        :, obs_col, :].cpu().numpy().ravel()
                 if K > 0:
-                    nb = Xp[sites[1:], sl][..., obs_col, :]   # (K, win, patch)
-                    buf["nn"][i, d0:d0 + wd] = nb[0].ravel()
-                    buf["cm"][i, d0:d0 + wd] = nb.mean(0).ravel()
-                    rel = latlon[sites[1:]] - latlon[sites[0]]
+                    # Baselines must read the SAME window the model's
+                    # context read: for mode B that is the HISTORICAL
+                    # window, not the eval slice -- else they are handed
+                    # concurrent discharge the model was denied (the bug
+                    # fixed in train_pub 2026-08-22, reintroduced by the
+                    # port until this line).
+                    csl = (slice(sl.start - ctx_off, sl.stop - ctx_off)
+                           if ctx_off else sl)
+                    b0 = 2 if recent_obs else 1
+                    nb = Xp[sites[b0:], csl][..., obs_col, :]
+                    if nb.shape[0] == 0:
+                        continue
+                    if recent_obs:
+                        lo = d0 + wd - recent_obs * a.patch
+                        if lo < 0:
+                            continue
+                        buf["nn"][i, lo:d0 + wd] = nb[0, -recent_obs:].ravel()
+                        buf["cm"][i, lo:d0 + wd] = nb.mean(0)[
+                            -recent_obs:].ravel()
+                    else:
+                        buf["nn"][i, d0:d0 + wd] = nb[0].ravel()
+                        buf["cm"][i, d0:d0 + wd] = nb.mean(0).ravel()
+                    rel = latlon[sites[b0:]] - latlon[sites[0]]
                     dist = np.sqrt(rel[:, 0] ** 2 + (rel[:, 1] * 0.766) ** 2)
                     w = 1.0 / (dist ** 2 + 1e-3)
                     w = (w / w.sum()).astype(np.float32)
-                    buf["idw"][i, d0:d0 + wd] = \
-                        (nb * w[:, None, None]).sum(0).ravel()
+                    if recent_obs:
+                        buf["idw"][i, lo:d0 + wd] = (
+                            nb * w[:, None, None]).sum(0)[
+                            -recent_obs:].ravel()
+                    else:
+                        buf["idw"][i, d0:d0 + wd] = (
+                            nb * w[:, None, None]).sum(0).ravel()
 
     return {k: v for k, v in buf.items()
             if k == "p" or (K > 0 and np.isfinite(v).any())}
 
 
 def main(a):
+    if a.smoke:
+        # only fill values the user did NOT explicitly override --
+        # the first version stomped an explicit --epochs 2, turning a
+        # 2-epoch smoke check into a 40-epoch x 10-fold run
+        import sys as _sys
+        if "--epochs" not in _sys.argv:
+            a.epochs = 40
+        if "--steps" not in _sys.argv:
+            a.steps = 150
+        if "--tasks" not in _sys.argv:
+            a.tasks = 4
+
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
 
@@ -227,6 +283,10 @@ def main(a):
             net.train()
             tot = 0.0
             for _ in range(a.steps):
+                # per STEP, not per task: self-ctx adds a site, and a
+                # per-task draw makes S ragged within the batch
+                step_self = (int(rng.integers(1, a.win // 2))
+                             if rng.random() < a.self_ctx_p else 0)
                 K = int(rng.choice(k_train))
                 tasks = []
                 for _ in range(a.tasks):
@@ -236,7 +296,10 @@ def main(a):
                         a.win, obs, a.retrieval, nn_rank,
                         geo_rank=geo_train, start_lo=lo_p, start_hi=hi_p,
                         latlon=ll if a.geo else None,
-                        area=area_km if a.area_scale else None)
+                        area=area_km if a.area_scale else None,
+                        ctx_start=("align" if a.context_period
+                                   == "train" else None),
+                        self_ctx=step_self)
                     tasks.append(t)
                 b = collate(tasks)
                 rec = net(b)
@@ -280,7 +343,9 @@ def main(a):
         for K in k_eval:
             got = predict_basins(net, Xp, A_s, valid_p, doy, te_idx, tr_idx,
                                  K, a, geo_eval, nn_rank, ll, area_km,
-                                 p0, starts, span, obs)
+                                 p0, starts, span, obs,
+                ctx_off=(137 if a.context_period == "train" else None),
+                recent_obs=a.recent_obs)
             for name, arr in got.items():
                 # standardised -> mm/day, the scale everything is scored on
                 acc[K][name].append(
@@ -351,12 +416,36 @@ if __name__ == "__main__":
     ap.add_argument("--retrieval", choices=["geo", "similar", "random"],
                     default="geo")
     ap.add_argument("--context-pool", choices=["all", "train"], default="all")
+    # NOTE: the fixed 137-patch (6-year) eval offset keeps historical
+    # context inside the training period for the SPATIAL protocols (eval
+    # 1995-99 -> context 1989-93). On the TEMPORAL extent late tiles would
+    # reach into the eval span; mode B there needs a per-tile multiple of
+    # 137 large enough to clear train_end. Not yet implemented -- do not
+    # run --context-period train with --extent temporal for real results.
+    ap.add_argument("--self-ctx-p", type=float, default=0.0,
+                    help="TRAIN: probability a step adds the query as its "
+                         "own context site with a random hidden tail")
+    ap.add_argument("--recent-obs", type=int, default=0, metavar="P",
+                    help="EVAL: own gauge visible to P patches before each "
+                         "scored day; stride-1 final-patch scoring")
+    ap.add_argument("--context-period", choices=["current", "train"],
+                    default="current",
+                    help="train = MODE B: context windows are HISTORICAL, "
+                         "same-DOY whole-year offsets (align draw in "
+                         "training, fixed 137-patch offset at eval)")
     ap.add_argument("--k-train", default="0,0,0,1,2,4,8,16")
     ap.add_argument("--k-eval", default="0,4")
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--epochs", type=int, default=40)
+    # DEFAULTS ARE THE CONVERGED BUDGET. The old 40/150/4 (24k task-views)
+    # were smoke-test defaults from train_pub.py, sized for 5-minute
+    # architecture debugging; the converged budget only ever lived in
+    # command-line overrides, so every run at defaults reproduced the
+    # undertrained regime (K=0 0.265 at e40 vs 0.63+ at e800, fold 0).
+    ap.add_argument("--smoke", action="store_true",
+                    help="tiny debugging budget (the old defaults)")
+    ap.add_argument("--epochs", type=int, default=800)
     ap.add_argument("--steps", type=int, default=150)
-    ap.add_argument("--tasks", type=int, default=4, help="tasks per step")
+    ap.add_argument("--tasks", type=int, default=8, help="tasks per step")
     ap.add_argument("--batch", type=int, default=8, help="basins per eval batch")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-folds", type=int, default=0)

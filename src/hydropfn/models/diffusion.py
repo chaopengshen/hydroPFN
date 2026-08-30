@@ -96,7 +96,8 @@ class Block(nn.Module):
 class DenoiseUNet(nn.Module):
     """Small time-conditioned U-Net (128 -> 16 -> 128), ~8M params at w=64."""
 
-    def __init__(self, w: int = 64, temb: int = 64, in_ch: int = 1):
+    def __init__(self, w: int = 64, temb: int = 64, in_ch: int = 1,
+                 scale_cond: bool = False):
         """in_ch=1 unconditional; in_ch=3 conditional inpainting, where the
         extra channels are (known * mask, mask).
 
@@ -111,6 +112,23 @@ class DenoiseUNet(nn.Module):
         super().__init__()
         td = temb * 4
         self.temb = TimeEmb(temb)
+        # SCALE CONDITIONING. One network for every footprint, told which one
+        # it is looking at. Without this a 10 m patch and a 400 m patch are
+        # the same tensor with wildly different statistics, and the net must
+        # infer the scale from texture -- which it can only do where texture
+        # survives, i.e. not at the coarse end.
+        #
+        # This is what makes mixed-resolution training possible, and mixed
+        # resolution is not optional: 3DEP 10 m is CONUS-only and the global
+        # tier is 30 m (Copernicus GLO-30) or 90 m (MERIT). A model that has
+        # only ever seen 10 m is out-of-distribution over most of the planet.
+        # Inputs are log10(metres per pixel) and log10(footprint km), both
+        # continuous, so an unseen resolution INTERPOLATES rather than falling
+        # off a lookup table.
+        self.scale_cond = scale_cond
+        if scale_cond:
+            self.smlp = nn.Sequential(nn.Linear(2, td), nn.SiLU(),
+                                      nn.Linear(td, td))
         self.inp = nn.Conv2d(in_ch, w, 3, 1, 1)
         self.d1 = Block(w, w, td)
         self.d2 = Block(w, w * 2, td)
@@ -122,8 +140,10 @@ class DenoiseUNet(nn.Module):
         self.out = nn.Sequential(nn.GroupNorm(8, w), nn.SiLU(),
                                  nn.Conv2d(w, 1, 3, 1, 1))
 
-    def forward(self, x, t):
+    def forward(self, x, t, scale=None):
         e = self.temb(t)
+        if self.scale_cond and scale is not None:
+            e = e + self.smlp(scale.to(e.dtype))
         h1 = self.d1(self.inp(x), e)                      # 128, w
         h2 = self.d2(F.avg_pool2d(h1, 2), e)              # 64,  2w
         h3 = self.d3(F.avg_pool2d(h2, 2), e)              # 32,  2w
@@ -175,12 +195,12 @@ class Diffusion:
         ab = self.ab[t][:, None, None, None]
         return ab.sqrt() * x0 + (1 - ab).sqrt() * noise
 
-    def loss(self, net, x0):
+    def loss(self, net, x0, scale=None):
         t = torch.randint(0, self.T, (x0.shape[0],), device=x0.device)
         n = torch.randn_like(x0)
-        return F.mse_loss(net(self.q_sample(x0, t, n), t), n)
+        return F.mse_loss(net(self.q_sample(x0, t, n), t, scale), n)
 
-    def loss_cond(self, net, x0, mask, cond=None):
+    def loss_cond(self, net, x0, mask, cond=None, scale=None):
         """Conditional inpainting loss.  Noise is predicted everywhere but
         scored ONLY in the hole: outside it the answer is handed to the net as
         input, so scoring there would reward copying and drown the part we
@@ -190,14 +210,14 @@ class Diffusion:
         xt = self.q_sample(x0, t, n)
         inp = torch.cat([xt, cond if cond is not None else x0 * mask, mask],
                         dim=1)
-        pred = net(inp, t)
+        pred = net(inp, t, scale)
         tgt = self._target(x0, n, t)
         hole = 1.0 - mask
         return ((pred - tgt) ** 2 * hole).sum() / hole.sum().clamp(min=1.0)
 
     @torch.no_grad()
     def ddim_cond(self, net, known, mask, steps: int = 50,
-                  resample: int = 2, ctx_override=None):
+                  resample: int = 2, ctx_override=None, scale=None):
         """DDIM with the context supplied as input channels.
 
         `resample` implements RePaint's jump-back: after each step, re-noise
@@ -215,7 +235,7 @@ class Diffusion:
             for u in range(resample):
                 tb = torch.full((B,), int(t), device=known.device,
                                 dtype=torch.long)
-                pred = net(torch.cat([x, ctx], dim=1), tb)
+                pred = net(torch.cat([x, ctx], dim=1), tb, scale)
                 eps, x0 = self._to_eps_x0(pred, x, tb)
                 x0 = x0.clamp(-6, 6)
                 x0 = mask * known + (1 - mask) * x0

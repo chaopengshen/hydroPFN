@@ -53,7 +53,8 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
                ctx_start=None, latlon=None, self_da=0, mask_kind=None,
-               score_tail=0, attr_mask=0.0, self_ctx=0, area=None):
+               score_tail=0, attr_mask=0.0, self_ctx=0, area=None,
+               dem=None, dem_p=1.0, attr_drop=0.0):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
     All sites share the SAME time window, so context and query are contemporary
@@ -93,6 +94,17 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     #                      time-aligned attention is meaningless here by
     #                      construction, since patch n of the query and patch n
     #                      of the context are different weeks.
+    if ctx_start == "align":
+        # SEASONALLY ALIGNED historical context: same day-of-year, earlier
+        # years. 137 patches x 16 d = 2,192 d = 6.001 years (0.5 d drift),
+        # the closest whole-patch multiple of the year. The original mode-B
+        # offset (200 patches = 8.76 yr) was ~88 days OFF-season, so the
+        # time-aligned path matched query patches against a different
+        # season -- a plausible reason historical context measured as
+        # worthless (+0.005). "Same season, earlier years" is real
+        # hydrologic information; "a random season some years ago" is not.
+        j = int(rng.integers(1, max(2, s // 137 + 1)))
+        ctx_start = max(0, s - 137 * j)
     if ctx_start is None:
         ser = Xp[sites][:, sl]
         val = valid_p[sites][:, sl]
@@ -171,7 +183,29 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     av = np.ones((S, A.shape[1]), np.float32)
     if attr_mask > 0:
         av[0] = (rng.random(A.shape[1]) > attr_mask).astype(np.float32)
+    if attr_drop > 0 and rng.random() < attr_drop:
+        # DROP THE WHOLE CURATED ATTRIBUTE VECTOR on this task. Not per
+        # attribute -- all of it -- so the only basin descriptor left is the
+        # DEM token plus forcings. This is the SUBSTITUTION test: with statics
+        # always present and DEM present only half the time, the optimiser
+        # will lean on the curated summary and terrain can only ever be
+        # marginal, which is precisely what the first ablation measured.
+        #
+        # It is also the honest global case. Curated attributes are a CONUS
+        # luxury; at 40,000 stations worldwide you have a DEM and little else.
+        av[0] = 0.0
     task["attr_vis"] = av
+    if dem is not None:
+        # MODALITY DROPOUT. A pathway always present in training becomes
+        # load-bearing and will be absent globally -- 3DEP is CONUS-only
+        # and the global tier is 30-90 m. Dropping DEM on a fraction of
+        # tasks is also what makes the ablation readable: the SAME weights
+        # run with and without it, so the marginal contribution is measured
+        # rather than inferred by comparing two separate models.
+        task["dem"] = np.nan_to_num(dem[sites]).astype(np.float32)
+        keep = (rng.random(S) < dem_p).astype(np.float32)
+        keep *= np.isfinite(dem[sites]).all(1).astype(np.float32)
+        task["dem_vis"] = keep
     # which query patches are actually being asked for -- eval scores ONLY
     # these, so self-DA is not credited for copying back its visible history
     # WHAT GETS SCORED. Normally every hidden query patch. `score_tail` P
@@ -266,6 +300,10 @@ def main(a):
     mu = np.nanmean(np.where(valid[tr], X[tr], np.nan), axis=(0, 1))
     sd = np.nanstd(np.where(valid[tr], X[tr], np.nan), axis=(0, 1)) + 1e-6
     Xs = np.nan_to_num((X - mu) / sd)
+    # captured as scalars NOW: `sd` is later shadowed by the --load
+    # checkpoint state dict, which is how the raw-NSE inversion first
+    # crashed (KeyError: 5 = indexing a state dict with obs_col)
+    obs_mu, obs_sd = float(mu[-1]), float(sd[-1])
     am, asd = A_[tr].mean(0), A_[tr].std(0) + 1e-6
     A_s = np.nan_to_num((A_ - am) / asd).astype(np.float32)
 
@@ -287,6 +325,23 @@ def main(a):
     # the QUERY's own streamflow, and it never is.
     ll = d["latlon"]
     ar = d.get("area")
+    demf = None
+    if a.dem_feats:
+        _z = np.load(a.dem_feats, allow_pickle=True)
+        _pos = {sv: i for i, sv in
+                enumerate(np.asarray(_z["site_id"]).astype(str))}
+        _F, _ok = _z["feats"], _z["ok"]
+        # JOIN BY SITE ID, never by index -- a positional join silently
+        # pairs each basin with some other basin's terrain
+        demf = np.full((len(d["site_id"]), _F.shape[1]), np.nan, np.float32)
+        _hit = 0
+        for _i, sv in enumerate(d["site_id"]):
+            j = _pos.get(str(sv))
+            if j is not None and _ok[j]:
+                demf[_i] = _F[j]; _hit += 1
+        demf = (demf - np.nanmean(demf, 0)) / (np.nanstd(demf, 0) + 1e-6)
+        print(f"  DEM features: {_hit}/{len(demf)} sites matched by id, "
+              f"{_F.shape[1]} dims", flush=True)
     # TWO geo rankings, and conflating them was a leak.
     #
     # TRAINING context must come from TRAINING basins only. Ranking over all
@@ -352,7 +407,8 @@ def main(a):
               f"neighbour-trained LSTM arm", flush=True)
 
     enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
-                      d_ffd=a.d_ffd, k_summary=a.k_summary)
+                      d_ffd=a.d_ffd, k_summary=a.k_summary,
+                      n_dem=(demf.shape[1] if demf is not None else 0))
     net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
                    geo=a.geo, causal=a.causal,
                    no_pooled=a.no_pooled).to(DEVICE)
@@ -416,15 +472,19 @@ def main(a):
             for _ in range(a.batch):
                 q = int(rng.choice(tr))
                 pool = tr[tr != q]
-                cs = (int(rng.integers(0, max(1, (train_end_patch or
-                                                  Xp.shape[1] - a.win))))
-                      if a.context_period == "train" else None)
+                cs = None
+                if a.context_period == "train":
+                    cs = ("align" if a.ctx_align else
+                          int(rng.integers(0, max(1, (train_end_patch
+                              or Xp.shape[1] - a.win)))))
                 t, _, _ = build_task(Xp, A_s, valid_p, doy, q, pool, K, rng,
                                      a.win, obs_col, a.retrieval, nn_rank,
                                      geo_rank=geo_rank_train,
                                      start_hi=train_end_patch, ctx_start=cs,
                                      latlon=ll if a.geo else None,
                                      area=ar if a.area_scale else None,
+                                     dem=demf, dem_p=a.dem_p,
+                                     attr_drop=a.attr_drop,
                                      # TRAINING tail length is RANDOM.
                                      # Fixing it at --self-da (=1) hides one
                                      # patch per task, so the model gets 32x
@@ -553,14 +613,20 @@ def main(a):
                 chunk = te[i0:i0 + a.batch]
                 tasks, metas = [], []
                 for q in chunk:
-                    cs = (a.context_train_start if a.context_period == "train"
-                          else None)
+                    cs = None
+                    if a.context_period == "train":
+                        # aligned eval: exactly 6 years before the
+                        # eval window, same season, inside training
+                        cs = (a.eval_start - 137 if a.ctx_align
+                              else a.context_train_start)
                     t, sites, sl = build_task(
                         Xp, A_s, valid_p, doy, int(q), tr, K, erng, a.win,
                         obs_col, a.retrieval, nn_rank, fixed_start=st,
                         geo_rank=geo_rank, ctx_start=cs,
                         latlon=ll if a.geo else None,
-                        area=ar if a.area_scale else None, self_da=a.self_da,
+                        area=ar if a.area_scale else None,
+                        dem=demf, dem_p=a.dem_eval,
+                        attr_drop=a.attr_eval, self_da=a.self_da,
                         score_tail=a.score_tail, attr_mask=a.mask_attrs,
                         self_ctx=a.self_ctx)
                     csl = sl if cs is None else slice(cs, cs + a.win)
@@ -630,9 +696,20 @@ def main(a):
                 print(f"      lead {d+1:2d} d: per-basin median NSE "
                       f"{m_:+.4f} ({f_:.0%} > 0)", flush=True)
         med, frac, nb = nse_per_site(ys, ps)
+        # RAW-SPACE NSE (Kraabel correction, 2026-08-29). Everything above is
+        # computed on log1p(Q), z-scored -- log-NSE and raw NSE weight flows
+        # differently and NEITHER BOUNDS THE OTHER, so only the raw number may
+        # ever sit beside a published CAMELS value. Invert the exact forward
+        # transform: z -> log1p (undo train-stats affine) -> expm1 -> mm/day.
+        _inv = lambda v: np.expm1(np.clip(
+            np.asarray(v, dtype=np.float64) * obs_sd + obs_mu,
+            None, 20.0))
+        med_raw, frac_raw, _ = nse_per_site([_inv(y_) for y_ in ys],
+                                            [_inv(p_) for p_ in ps])
         rec_row = {"K": K, "n": int(_y.size), "model": r2(_y, _p),
                    "model_patch16": r2(_ya, _pa),
-                   "nse_median": med, "nse_frac_pos": frac, "n_basins": nb}
+                   "nse_median": med, "nse_frac_pos": frac,
+                   "nse_median_raw": med_raw, "n_basins": nb}
         if K > 0:
             rec_row["nn_donor"] = r2(np.concatenate(ys), np.concatenate(nn_ps))
             rec_row["ctx_mean"] = r2(np.concatenate(ys), np.concatenate(cm_ps))
@@ -643,7 +720,8 @@ def main(a):
         rows.append(rec_row)
         print(f"  K={K:3d}  pooled-daily {rec_row['model']:+.4f}"
               f"  16d {rec_row['model_patch16']:+.4f}"
-              f"  | per-basin NSE med {med:+.4f} ({frac:.0%} of {nb} > 0)"
+              f"  | NSE med log {med:+.4f} RAW {med_raw:+.4f} "
+              f"({frac:.0%} of {nb} > 0)"
               + (f"  | IDW {rec_row['idw_nse']:+.4f}" if K > 0 else "")
               + (f"   nn_donor {rec_row['nn_donor']:+.4f}"
                  f"   ctx_mean {rec_row['ctx_mean']:+.4f}" if K > 0 else ""),
@@ -682,9 +760,11 @@ if __name__ == "__main__":
                     help="'all' lets a held-out query use OTHER basins in its "
                          "own region as context -- not leakage, since the "
                          "model never trained on them and those gauges exist")
-    ap.add_argument("--epochs", type=int, default=40)
-    ap.add_argument("--steps", type=int, default=150)
-    ap.add_argument("--batch", type=int, default=4)
+    # Converged-budget defaults (see camels531_pub.py for the history of
+    # how smoke-test defaults escaped into a benchmark).
+    ap.add_argument("--epochs", type=int, default=160)
+    ap.add_argument("--steps", type=int, default=300)
+    ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--eval-start", type=int, default=200,
                     help="evaluation window start, in PATCHES")
@@ -695,6 +775,9 @@ if __name__ == "__main__":
                     help="'current': context shares the query window -- data "
                          "assimilation. 'train': context comes from the "
                          "training period -- long-term conditioning only")
+    ap.add_argument("--ctx-align", action="store_true",
+                    help="historical context at same-DOY offsets "
+                         "(137-patch = whole-year multiples)")
     ap.add_argument("--context-train-start", type=int, default=100,
                     help="patch index for context when --context-period train")
     ap.add_argument("--train-end", type=int, default=None,
@@ -715,6 +798,21 @@ if __name__ == "__main__":
                          "forecasting conditionals -- otherwise the mixture "
                          "is only measured on PUB, i.e. its cost and never "
                          "its benefit")
+    ap.add_argument("--attr-drop", type=float, default=0.0,
+                    help="TRAINING: probability of dropping the ENTIRE "
+                         "curated attribute vector, forcing the model to "
+                         "rely on DEM + forcings instead")
+    ap.add_argument("--attr-eval", type=float, default=0.0,
+                    help="EVAL: 1.0 = statics withheld (the global case), "
+                         "0.0 = statics available")
+    ap.add_argument("--dem-feats", default=None,
+                    help="npz of per-site terrain features (see "
+                         "dem_diffusion_features.py --extract-to)")
+    ap.add_argument("--dem-p", type=float, default=0.5,
+                    help="TRAINING: probability a site keeps its DEM token")
+    ap.add_argument("--dem-eval", type=float, default=1.0,
+                    help="EVAL: 1.0 = DEM on, 0.0 = off. The ablation is "
+                         "the SAME checkpoint run at both.")
     ap.add_argument("--area-scale", action="store_true",
                     help="give context tokens the log drainage-area RATIO to "
                          "the query, the conventional donor-transfer scaling")
