@@ -185,8 +185,8 @@ reference row on THIS protocol:
 
 | # | question | ours | reference | status |
 |---|---|---|---|---|
-| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | folds 0–3: K=0 **0.675** avg (0.630/0.706/0.690/0.674) · K=4 **0.74** avg | LSTM 0.666 · LSTM+dHBV1.1p 0.700 | 4/10 folds; K=0 ≈ LSTM, K=4 beats all |
-| ii | mode B (historical, DOY-aligned) vs IDW-on-history | fold 0: K=0 0.659 → K=8 **0.673** (+0.014) | historical IDW at aggregate | 1/10 folds |
+| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW) |
+| ii | mode B (historical, DOY-aligned) vs IDW-on-history | folds 0–6: K=0 0.66–0.75, per-fold context gain +0.006–0.017 | historical IDW at aggregate | 7/10 folds; mode-B *training* keeps lifting K=0 |
 | iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.655** (K=0 + self-context) | LSTM temporal **0.692** | **DONE — short by 0.037** at patch-16 lag |
 | iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.776 · K=4 0.785 · K=8 **0.786** | LSTM 0.692 · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.094 LSTM, +0.15 IDW) |
 
