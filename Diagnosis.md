@@ -1,3 +1,13 @@
+> **METRIC WARNING (2026-08-30).** Every CAMELS NSE/R² in this document is on
+> `log1p(QObs)`, z-scored, on a 671-basin internal protocol — NOT raw mm/day.
+> These numbers are 0.05–0.15 higher than the same models score on the
+> citable metric, and may not sit beside published values. The verified
+> protocol, raw-scale numbers, and the current suite live in
+> [docs/camels531_protocol.md](docs/camels531_protocol.md). The metric ladder
+> for one model: 16-day pooled R² 0.91–0.96 → daily pooled R² ~0.90 →
+> log median NSE 0.872 → **raw median NSE 0.800**. Internal comparisons on a
+> shared protocol remain valid.
+
 # Diagnosis — what the PUB result rests on, and what it does not yet establish
 
 Written 2026-08-22 at commit `9f64373` (model and training code unchanged since
