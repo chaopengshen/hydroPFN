@@ -215,3 +215,28 @@ Mode B's port carries the baseline discipline from train_pub: donor baselines
 read the HISTORICAL context window, never the eval slice — reading the eval
 slice hands them concurrent discharge the model was denied, which reversed a
 mode-B table once already.
+
+
+---
+
+## Kriging and gauge density (2026-08-30)
+
+"Kriging reaches ~0.9 NSE" and "IDW scores 0.66 here" are the same
+phenomenon at different gauge densities (`experiments/kriging_density.py`,
+model-free, raw mm/day, spatial scored period):
+
+| nearest gauge | n | median NSE (IDW K=8) |
+|---|---|---|
+| 0-11 km | 58 | **0.838** |
+| 11-22 km | 102 | 0.773 |
+| 22-39 km | 152 | 0.714 |
+| 39-67 km | 123 | 0.547 |
+| >67 km | 96 | 0.187 |
+
+CAMELS' densest bin reaches 0.84 with cross-divide neighbours alone (the set
+has 0.011% nested pairs); the literature's ~0.9 comes from dense NESTED
+networks where downstream flow contains the upstream gauge. Geometry is the
+variable; the interpolation method is second-order. Consequence for reading
+the suite: the model's margin over IDW should be judged per density bin — the
+operationally interesting claim is holding skill where gauges are FAR, where
+interpolation collapses (0.19 beyond 67 km).
