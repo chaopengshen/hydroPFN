@@ -117,7 +117,8 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                     geo_rank=geo_rank, latlon=latlon if a.geo else None,
                     area=area if a.area_scale else None,
                     ctx_start=(p0 + st - ctx_off) if ctx_off else None,
-                    self_ctx=recent_obs)
+                    self_ctx=(0 if a.self_da else recent_obs),
+                    self_da=(recent_obs if a.self_da else 0))
                 tasks.append(t)
                 metas.append((int(q), sites, sl))
             b = collate(tasks)
@@ -143,7 +144,10 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                     # port until this line).
                     csl = (slice(sl.start - ctx_off, sl.stop - ctx_off)
                            if ctx_off else sl)
-                    b0 = 2 if recent_obs else 1
+                    # self-ctx inserts the query as an extra context site
+                    # (skip it); self-da keeps own history in the query's OWN
+                    # token stream, so no site is inserted and b0 stays 1.
+                    b0 = 2 if (recent_obs and not a.self_da) else 1
                     nb = Xp[sites[b0:], csl][..., obs_col, :]
                     if nb.shape[0] == 0:
                         continue
@@ -299,7 +303,9 @@ def main(a):
                         area=area_km if a.area_scale else None,
                         ctx_start=("align" if a.context_period
                                    == "train" else None),
-                        self_ctx=step_self)
+                        self_ctx=step_self,
+                        self_da=(int(rng.integers(1, a.win // 2))
+                                 if a.self_da else 0))
                     tasks.append(t)
                 b = collate(tasks)
                 rec = net(b)
@@ -425,6 +431,13 @@ if __name__ == "__main__":
     ap.add_argument("--self-ctx-p", type=float, default=0.0,
                     help="TRAIN: probability a step adds the query as its "
                          "own context site with a random hidden tail")
+    ap.add_argument("--self-da", action="store_true",
+                    help="own history in the QUERY'S OWN token stream "
+                         "(self-attention) rather than as a context site. "
+                         "The 671-era channel behind that protocol's 0.8765 "
+                         "on this task; self-as-context lost to it there. "
+                         "Trains with a random hidden tail; at eval the tail "
+                         "is --recent-obs patches. Adds NO context site.")
     ap.add_argument("--recent-obs", type=int, default=0, metavar="P",
                     help="EVAL: own gauge visible to P patches before each "
                          "scored day; stride-1 final-patch scoring")
