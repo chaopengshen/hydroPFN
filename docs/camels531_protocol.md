@@ -227,8 +227,20 @@ none of them may be quoted against the LSTM's all-days 0.692. The patch-16
 model predicts its block uniformly and never exploits how recent the last
 own-gauge observation is — the same conclusion the 671 protocol reached,
 where a dedicated `patch=1` specialist was worth +0.06 on this task.
-Closing (iii) at K=0 needs finer patches (or a patch-1 head), not a
-different readout.
+
+**Patch-1 rerun (2026-08-31, `pub531_p1_recobs_e800`): finer patches alone
+do NOT close it.** `--patch 1 --win 64 --self-ctx-p 0.4 --recent-obs 1`
+(own gauge visible through yesterday, every day scored at lead 1), same
+800×150×8 budget: K=0 **0.626** (below patch-16's 0.655), K=4 **0.775**
+(vs 0.785). Two confounds before "the gap is real at any granularity" can
+be claimed: (a) 64-day windows mean 8× fewer scored days per task view at
+the same view count — and the K=0 arm shows the undertraining fingerprint
+(FHV −21.9 %); (b) the own gauge entered as a CONTEXT SITE (`self_ctx`),
+whereas the 671-era 0.8765 specialist used the `--self-da` channel — own
+history in the query's own token stream — and self-as-context losing to
+self-da is itself an established 671-era result. The self-da port is the
+next test; until then (iii) stands: own-gauge assimilation has not matched
+the gauged baselines (LSTM 0.692, dHBV1.1p 0.743) in any configuration.
 
 **Mode B final (2026-08-30, all 10 folds).** Three findings, in decreasing
 order of importance:
