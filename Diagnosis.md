@@ -1,3 +1,15 @@
+> **METRIC WARNING (2026-08-30).** Every CAMELS NSE/R² in this document is on
+> `log1p(QObs)`, z-scored, on a 671-basin internal protocol — NOT raw mm/day.
+> These numbers are 0.05–0.15 higher than the same models score on the
+> citable metric, and may not sit beside published values. The verified
+> protocol, raw-scale numbers, and the completed suite (2026-08-30) live in
+> [docs/camels531_protocol.md](docs/camels531_protocol.md) — headline there:
+> PUB spatial K=0 **0.682** / K=4 **0.751** vs LSTM 0.666 and LSTM+dHBV1.1p
+> 0.700; mode-B-trained K=0 **0.707**. The metric ladder for one model:
+> 16-day pooled R² 0.91–0.96 → daily pooled R² ~0.90 → log median NSE 0.872 →
+> **raw median NSE 0.800**. Internal comparisons on a shared protocol remain
+> valid.
+
 # Diagnosis — what the PUB result rests on, and what it does not yet establish
 
 Written 2026-08-22 at commit `9f64373` (model and training code unchanged since
@@ -134,8 +146,12 @@ Training: 40 epochs × 150 steps, batch 4 tasks, AdamW, OneCycle max_lr 3e-4,
 K sampled from `{0,1,2,4,8,16}`.
 
 **LSTM baseline** `experiments/lstm_baseline.py`, 0.30M params, hidden 256,
-1 layer, dropout 0.4, 60 epochs × 200 steps, 120-day warmup excluded from both
-loss and scoring, predictions aggregated to the same 16-day patches.
+1 layer, dropout 0.4, 60 epochs × 200 steps, predictions aggregated to the
+same 16-day patches. **Correction (2026-08-29, found by NK):** this script's
+120-day warmup was excluded from the loss but the scored window began with a
+COLD hidden state — a bias *against* the baseline. The script is kept for
+provenance only; do not run it. The 531 suite uses the dmg-protocol scoring
+(365-day warmup, never scored) throughout.
 
 **Reproduce**
 ```bash
@@ -195,8 +211,9 @@ Second region set (`02,07,10`, single seed): ours 0.7278, LSTM 0.7074,
 Each was too favourable, and each fell to inspecting the underlying artefact
 rather than reasoning about it. A pre-registered plan guards against moving the
 goalposts, not against aiming at the wrong one — every one of these was a setup
-error, invisible from inside the plan. **The missing temporal control at the
-top of this document is the same class of error, still open.**
+error, invisible from inside the plan. The missing temporal control at the
+top of this document was the same class of error — since run and passed (see
+the RESOLVED section above).
 
 
 ---
@@ -229,16 +246,22 @@ source of the mismatch corrected on 2026-08-22.)
 | **A — assimilation** | the query's CURRENT window | 0.4684 | **0.8584** | **+0.390** |
 | **B — regionalisation** | an earlier TRAINING-period window | 0.5227 | 0.5265 | +0.004 |
 
+**Do not read the K=0 column as the forward arm's ability.** 0.4684 is the
+1×-smoke-budget artifact with K=0 drawn only 1/6 of steps — the retraction
+below takes it to 0.6066 at 5× budget, and the converged 531 runs land at
+0.682 raw (0.707 mode-B-trained). This table's value is the mode-A-vs-mode-B
+*gain* comparison at matched budget, nothing else.
+
 A neighbour's *current flow* is worth +0.39. A neighbour's *history* is worth
 ~nothing extra. The effect is real-time state, not learned similarity — which
 is why this is data assimilation, and why the time-aligned attention (which
 matches patch n of the query to patch n of the context) is the component that
 matters.
 
-*(Mode B is being re-run with the training-context leak closed; the figure
-above still carries it. Under the leak the neighbours' histories were partly
-absorbed into the weights already, so the null was about REDUNDANCY, not about
-the value of historical data — a distinction CS identified.)*
+*(Re-run since with the leak closed, and again at converged budget on the
+531 protocol: the eval-time null holds every time — historical context adds
++0.001–0.006. But see the mode-B correction further down: the TRAINING draw
+is a different story.)*
 
 ## Corrections forced by the four challenges
 
@@ -334,7 +357,10 @@ halves (`test_connector_geo_translation_invariant` at atol 1e-3 — float32
 rounding amplified by the 64 rad/deg top frequency, measured, not assumed;
 `test_connector_geo_responds_to_distance`).
 
-**Untrained. Whether it fixes the large-K decay is a hypothesis, not a result.**
+Since trained with routinely — every 531-suite run uses `--geo` — but the
+isolated large-K-decay ablation was never run, so "geo-encoding fixes the
+decay" remains unestablished. (At converged budget the K≤8 sweep shows no
+decay to fix; K=32 has not been revisited.)
 
 ## 3. The model is not causal
 
@@ -380,10 +406,11 @@ Mode B must now be stated as **two separate facts**:
   −0.51) — but that value is entirely the per-site pathway (forcings and
   statics), not the neighbours.
 
-### Budget check — RESOLVED, mode B is genuinely dead
+### Budget check — RESOLVED, but "mode B is dead" was HALF wrong (corrected 2026-08-30)
 
 The retracted "two-path costs −0.25" was a pure budget artifact, so mode B was
-re-run at 5× compute before being declared dead. It is not an artifact:
+re-run at 5× compute before being declared dead. The **eval-time** null is not
+an artifact:
 
 | | K=0 | K=32 | gain |
 |---|---|---|---|
@@ -395,14 +422,27 @@ was not** — it stays ~zero at 5× budget. Contrast mode A at **+0.390**: a ~78
 difference, robust to the leak fix, the baseline fix, and the budget.
 
 Note where mode B K=0 lands: **0.7492 daily, against the PUB LSTM's 0.7383
-daily** — a tie, and the same tie already established for unit A standalone.
-This locates the whole result: **without concurrent neighbours we are a
-regional LSTM.** Everything above that comes from reading neighbouring gauges
-in the eval window.
+daily** — a tie at that budget. The original conclusion drawn here —
+*"without concurrent neighbours we are a regional LSTM"* — **has not
+survived convergence.** Nicholas's undertraining diagnosis applied to the
+K=0 arm most of all: at the converged budget on the 531 protocol (raw
+mm/day), the no-context arm beats the LSTM outright (0.682 vs 0.666), and
+mode-B-**trained** K=0 reaches **0.707, past LSTM+dHBV1.1p (0.700)**.
 
-Consequence for the "local stations not in training" case: a station absent
-from training contributes ~nothing through its history. If it helps at all, it
-helps through concurrent data — which makes it a mode A use case, not mode B.
+That last number is the half of "mode B is dead" that was wrong, and it
+reconciles this section with Nicholas's report that using training data as
+context gives better results. Both readings are correct about different
+stages: historical context carries ~nothing **at inference** (+0.001 at e800,
+third confirmation), but as a **training draw** it regularizes the forward
+arm (+0.025 aggregate, single seed — see docs/camels531_protocol.md). His
+observation was made at the system level, where the two effects are
+confounded; the suite separates them. So mode B stays in the training
+mixture and out of the deployment story.
+
+Consequence for the "local stations not in training" case, unchanged: a
+station absent from training contributes ~nothing through its history at
+inference. If it helps at all, it helps through concurrent data — which
+makes it a mode A use case, not mode B.
 
 ## What this run of errors has in common
 
@@ -522,8 +562,12 @@ been *trained* across three, not from being given three at inference.
 
 ## Open
 
-- **the fingerprint check** — do DEM features predict HUC2? Decides everything
-  above.
+- **the fingerprint check** — do DEM features predict HUC2? Still unmeasured.
+  One framing correction since: a confirmed fingerprint would be a *risk
+  indicator*, not a verdict — test-region topography is a legitimate input at
+  inference (the model is allowed to see the terrain of the basin it
+  predicts); the failure mode is the weights memorising region→flow shortcuts
+  through it, which only the withheld-statics ablation actually measures.
 - SGMC circularity: geologists map unit contacts partly *from* topography.
   Visible in per-class recall — Sedimentary 0.72, Unconsolidated 0.58,
   Igneous **0.087**.
