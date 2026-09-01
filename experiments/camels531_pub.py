@@ -219,6 +219,7 @@ def main(a):
     acc = {K: {"p": [], "nn": [], "cm": [], "idw": []} for K in k_eval}
     targs, fold_of, gages = [], [], []
 
+    tag = a.tag or f"pub_{a.extent}_{a.protocol}_s{a.seed}"
     for kf, te_idx in enumerate(folds):
         if a.extent == "temporal":
             tr_idx = np.arange(len(gage))
@@ -339,6 +340,11 @@ def main(a):
                       f"{tot / a.steps:.4f}  [{(time.time() - t0) / 60:.1f} "
                       f"min]", flush=True)
 
+        if a.save_ckpt:
+            ck = LOGS / "camels531" / tag
+            ck.mkdir(parents=True, exist_ok=True)
+            torch.save(net.state_dict(), ck / f"fold{kf}.pt")
+
         # ---- evaluation: tile the eval span, keep only the scored days
         ev = win_p["eval_in"]
         p0 = ev.start // a.patch
@@ -377,7 +383,6 @@ def main(a):
                   f"{np.nanmedian(m.nse):+.4f}", flush=True)
 
     targ = np.concatenate(targs, 0)
-    tag = a.tag or f"pub_{a.extent}_{a.protocol}_s{a.seed}"
     outdir = LOGS / "camels531" / tag
     outdir.mkdir(parents=True, exist_ok=True)
     np.save(outdir / "targ.npy", targ)
@@ -489,6 +494,10 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-folds", type=int, default=0)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--save-ckpt", action="store_true",
+                    help="save each fold's state_dict beside its predictions "
+                         "(logs/camels531/<tag>/fold<k>.pt) for eval-only "
+                         "reuse, e.g. the statics-imputation experiments")
     args = ap.parse_args()
     if args.protocol is None:
         args.protocol = "temporal" if args.extent == "temporal" else "spatial"
