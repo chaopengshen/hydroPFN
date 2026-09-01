@@ -312,7 +312,15 @@ def main(a):
                         ctx_start=("align" if a.context_period
                                    == "train" else None),
                         self_ctx=step_self,
-                        self_da=(int(rng.integers(1, a.win // 2))
+                        # same draw-share logic as self-ctx: the scored
+                        # position is the window's LAST, so a uniform 1..win/2
+                        # tail trains it with its nearest observation ~16 d
+                        # away on average -- the eval configuration (1 d) gets
+                        # ~3% of its gradients, and the model learns a stale
+                        # smoothed echo (measured: lag-+2 mode, NSE 0.303).
+                        self_da=(int(rng.integers(
+                            1, (a.self_da_max_tail + 1
+                                if a.self_da_max_tail else a.win // 2)))
                                  if a.self_da else 0))
                     tasks.append(t)
                 b = collate(tasks)
@@ -444,6 +452,11 @@ if __name__ == "__main__":
                          "draw at P patches (default 0 = uniform 1..win/2). "
                          "Set it near --recent-obs so the evaluated "
                          "configuration is actually common in training.")
+    ap.add_argument("--self-da-max-tail", type=int, default=0, metavar="P",
+                    help="TRAIN: cap the self-da hidden tail at P patches "
+                         "(default 0 = uniform 1..win/2). Set to --recent-obs "
+                         "so the scored position trains on the evaluated "
+                         "information set.")
     ap.add_argument("--self-da", action="store_true",
                     help="own history in the QUERY'S OWN token stream "
                          "(self-attention) rather than as a context site. "
