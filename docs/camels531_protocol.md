@@ -228,6 +228,15 @@ model predicts its block uniformly and never exploits how recent the last
 own-gauge observation is — the same conclusion the 671 protocol reached,
 where a dedicated `patch=1` specialist was worth +0.06 on this task.
 
+**The persistence floor for this task is 0.444** (2026-09-01): yesterday's
+observed flow as today's prediction, median per-basin NSE on the identical
+eval buffer. That is the number any own-gauge method must beat to justify
+itself. Our recent-obs stream clears it by +0.21 (0.655), so the stream does
+real work -- but note what the comparison against the LSTM actually says:
+the LSTM's 0.692 uses forcings and NO own-gauge observations, so at 0.655 we
+are losing while holding STRICTLY MORE information than the model that beats
+us. That, not the raw gap, is the indictment.
+
 **Patch-1 rerun (2026-08-31, `pub531_p1_recobs_e800`): finer patches alone
 do NOT close it.** `--patch 1 --win 64 --self-ctx-p 0.4 --recent-obs 1`
 (own gauge visible through yesterday, every day scored at lead 1), same
