@@ -187,144 +187,109 @@ be stated:
 
 ---
 
-## The full suite (2026-08-29, in progress)
+## The full suite (closed 2026-09-01)
 
-Training protocol changed twice (raw-mm/day metric; converged budget — the
-old defaults were smoke-test-sized and are now raised, `--smoke` restores
-them), so every claim is being re-earned here. Four questions, each with its
-reference row on THIS protocol:
+Four questions were posed on 2026-08-29 after the protocol changed twice
+(raw-mm/day metric; converged budget — the old defaults were smoke-test-sized,
+`--smoke` restores them). All four are answered. This section is the ONE
+current-state record; run tags are given so every number can be traced to its
+log under `logs/camels531/`.
 
-| # | question | ours | reference | status |
+### The scoreboard, by information regime
+
+Median per-basin NSE, raw mm/day, e800 unless noted. "Gauged" = test basin in
+training (temporal split); "ungauged" = held-out basin (PUB spatial).
+
+| the model is given | extent | ours | references | verdict |
 |---|---|---|---|---|
-| i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW); mode-B-trained K=0 goes higher still (0.707, row ii) |
-| ii | mode B (historical, DOY-aligned) vs IDW-on-history | **K=0 0.7071 · K=8 0.7084** (all 10 folds) | historical IDW **−0.44 to −0.51** (worthless) · concurrent IDW 0.645 | **DONE — the training draw is the prize**: mode-B-trained K=0 **beats LSTM+dHBV1.1p** (0.707 vs 0.700); eval-time historical context adds only +0.001 |
-| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.707** (draw-share fix, 2026-09-01; was 0.655) | LSTM temporal **0.687** (3-seed e100: 0.676/0.688/0.699) · **dHBV1.1p 0.743** (exact protocol) | **BEATS the LSTM** (+0.020, spread 0.012); short of dHBV1.1p by 0.036 |
-| iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.798 · K=4 0.802 · K=8 **0.804** (draw-share fix; was 0.786) | LSTM 0.692 · **dHBV1.1p 0.743 (exact protocol)** · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.112 LSTM, **+0.061 dHBV1.1p**, +0.17 IDW) |
+| nothing (forward) | ungauged | 0.682 · **0.707** mode-B-trained (`pub531_e800`, `pub531_modeB_e800`) | LSTM+dHBV1.1p **0.700** (3-seed) · StefaLand 0.721 · LSTM 0.666¹ | **ties the hybrid**, trails StefaLand by 0.014 |
+| + concurrent neighbours | ungauged | K=4 **0.751** (`pub531_e800`) | StefaLand 0.721 · IDW 0.645 | **beats everything** (+0.030 / +0.106) |
+| nothing (forward) | gauged | K=0 **0.640** (`pub531_temporal_fwd_e800`) | LSTM **0.687** (3-seed e100) · dHBV1.1p **0.743** | **behind both** (−0.047 / −0.10) — the specialists lead on their home turf |
+| + concurrent neighbours | gauged | K=4 **0.773** (`pub531_temporal_fwd_e800`) | dHBV1.1p 0.743 · IDW 0.634 | beats both (+0.030 / +0.14) |
+| + own gauge, 1–16 d stale | gauged | **0.707** (`pub531_drawshare_e800`) | persistence 0.444 · LSTM 0.687 · dHBV1.1p 0.743 · DI-LSTM ~0.86² | beats the LSTM (+0.020, seed spread 0.012); short of dHBV1.1p by 0.036; **far from DI-LSTM — open** |
+| + both streams | gauged | K=8 **0.804** (`pub531_drawshare_e800`) | dHBV1.1p 0.743 · LSTM 0.687 · IDW 0.634 | **beats everything** (+0.061 / +0.117 / +0.17) |
 
-**(iii)/(iv) detail** (temporal, e800, `--self-ctx-p 0.4 --recent-obs 1`,
-stride-1 final-patch scoring — every day predicted from beyond the
-observation cutoff): own gauge alone at 1–16-day lag does NOT reach the
-gauged LSTM (0.655 vs 0.692) nor the gauged dHBV1.1p (0.743). Adding
-concurrent neighbours flips it decisively: **0.786 vs LSTM 0.692 and
-dHBV1.1p 0.743** — the latter on its own exact benchmark period, basins and
-metric — and +0.027 over the concurrent-only e200 run. Donor baselines:
-nn 0.537, ctx_mean 0.53–0.58, IDW 0.61–0.63.
+¹ single-seed e50; the temporal 3-seed e100 sweep confirmed its e50
+counterpart within noise (0.687 vs 0.692), so 0.666 is probably sound but has
+not been re-run. ² Feng et al. 2020, lead-1, literature value on these
+basins — not our run.
 
-**Lead-1 readout (2026-08-30): the −0.037 gap is real, not a lag artifact.**
-By-lead NSE from the saved predictions (buffer day *d* was predicted at lead
-`(d mod 16)+1`; the extraction reproduces the recorded all-lead medians
-exactly, n=531):
+### The four questions, answered
 
-| | lead 1 | lead 2 | lead 4 | lead 8 | lead 16 | all leads |
-|---|---|---|---|---|---|---|
-| K=0 | 0.686 | 0.690 | 0.671 | 0.697 | 0.684 | 0.655 |
-| K=8 | 0.804 | 0.806 | 0.798 | 0.817 | 0.818 | 0.786 |
+- **(i) beat LSTM / dHBV1.1p forward or with mode-B context** — YES on
+  ungauged basins (0.707 vs 0.700), NO on gauged temporal (0.640 vs 0.743):
+  the forward arm matches the specialists only where nobody has the gauge.
+- **(ii) beat IDW with mode B** — trivially yes (historical IDW is −0.44 to
+  −0.51; interpolating wrong-year discharge is worse than the mean), and the
+  real finding is below.
+- **(iii) equal/surpass the LSTM with the recent-obs stream** — YES
+  (0.707 vs 0.687) after the draw-share fix; dHBV1.1p (0.743) and DI-LSTM
+  (~0.86) remain ahead. Open.
+- **(iv) gains over LSTM and dHBV with context + recent-obs** — YES,
+  decisively: 0.804, +0.061 over dHBV1.1p on its own exact benchmark.
 
-There is **no lead decay**: lead 16 scores the same as lead 1 (K=0 0.684 vs
-0.686). The per-lead values sit ~0.03 above the pooled number at EVERY lead —
-a subsampling artifact (1/16 of the days per basin), not recency skill, so
-none of them may be quoted against the LSTM's all-days 0.692. The patch-16
-model predicts its block uniformly and never exploits how recent the last
-own-gauge observation is — the same conclusion the 671 protocol reached,
-where a dedicated `patch=1` specialist was worth +0.06 on this task.
+### The findings under the numbers
 
-**The persistence floor for this task is 0.444** (2026-09-01): yesterday's
-observed flow as today's prediction, median per-basin NSE on the identical
-eval buffer. That is the number any own-gauge method must beat to justify
-itself. Our recent-obs stream clears it by +0.21 (0.655), so the stream does
-real work -- but note what the comparison against the LSTM actually says:
-the LSTM's 0.692 uses forcings and NO own-gauge observations, so at 0.655 we
-are losing while holding STRICTLY MORE information than the model that beats
-us. That, not the raw gap, is the indictment.
+**Mode B's training draw is the prize; its eval-time context is inert**
+(`pub531_modeB_e800`, all 10 folds). Training on DOY-aligned historical
+context lifts the no-context arm 0.682 → **0.707** (+0.025) — the best
+forward number in the suite — while at inference the same context adds
++0.001 (K=8 0.7084 vs K=0 0.7071): same-DOY flows from a 6-year offset carry
+climatology the forcings already imply. So mode B stays in the training
+mixture and out of the deployment story.
 
-**Forward temporal, for completeness (2026-09-01,
-`pub531_temporal_fwd_e800`): the picture inverts from PUB.** Pure forward
-(no gauge data anywhere) on the gauged temporal split: K=0 **0.640** — behind
-the 3-seed LSTM 0.687 (−0.047) and dHBV1.1p 0.743 (−0.10). On their home
-turf (test basin in training, 15-year test span) the specialists lead the
-forward arm; on ungauged basins (suite i) we match them. Context flips it as
-always: K=4 **0.773** (+0.030 over dHBV1.1p), and the full stack reaches
-0.804. The 3-seed e100 LSTM sweep also CONFIRMS the old bar rather than
-raising it (median 0.687 vs the e50 single-seed 0.692) — that baseline was
-not soft; Feng 2022's 0.719 is an NLDAS-forcing number.
+**The draw distribution is part of the experiment** — the suite's recurring
+lesson, three instances: K=0 drawn 1/6 of steps (+0.055 when raised to 3/8);
+smoke-sized defaults escaping into benchmarks (K=0 0.265 at e40 → 0.682 at
+e800, context gain shrinking from +0.14 to +0.06 as the forward arm
+converged); and the recent-obs tail draw — the evaluated configuration
+(shortest tail) received ~3% of training steps, and raising it to 40%
+(`--self-ctx-p 0.8 --self-ctx-max-tail 2`) moved (iii) 0.655 → 0.707 and
+(iv) 0.786 → 0.804. None of these was an implementation bug; the identical
+eval code scored every configuration correctly.
 
-**Self-da with the fixed tail (2026-09-01, `pub531_p1_selfda_t1_e800`):
-the fix works, the channel still loses.** K=0 0.303 → **0.668** with
-`--self-da-max-tail 1` — confirming the lag-echo diagnosis — but still below
-the patch-16 self-context 0.707. At this budget, routing own history through
-cross-attention beats the own-token-stream channel, reversing the 671-era
-ranking. The gap to DI-LSTM (~0.86, Feng et al. 2020, lead-1) is now the
-genuine open problem on this task: real, not an artifact, and unexplained.
+**Recent-obs mechanics, what three configurations established.** The
+persistence floor is **0.444** (median lag-1 autocorrelation 0.722; NSE =
+2ρ−1 checks exactly). The patch-16 model shows **no lead decay** (lead 1 =
+lead 16), so per-lead readouts may not be quoted against all-days baselines —
+the ~+0.03 per-lead lift is a subsampling artifact. Routing own history
+through **cross-attention beats the own-token-stream channel** at this
+budget: self-ctx patch-16 0.707 > self-da patch-1 fixed-tail 0.668 >
+self-ctx patch-1 0.626 (`pub531_p1_selfda_t1_e800`, `pub531_p1_recobs_e800`)
+— reversing the 671-era ranking. A uniform-tail self-da run scored 0.303 by
+learning a lag-+2 echo (best-lag +2 in 490/531 basins): the scored position
+is the window's last, and a uniform 1..31-day tail trains it with its
+nearest observation ~16 days away on average. Diagnosed by fingerprint, not
+inspection. The remaining gap to DI-LSTM (~0.86 at lead 1) is real,
+unexplained, and the suite's main open problem.
 
-**Draw-share fix (2026-09-01, `pub531_drawshare_e800`): the gap was mostly
-undertraining of the evaluated configuration.** The self-context draw fired
-on 40% of steps with a hidden tail uniform over 1..16 patches, so the
-configuration eval actually scores (shortest tail) received ~3% of training
-steps. `--self-ctx-p 0.8 --self-ctx-max-tail 2` raises that to 40% — and
-K=0 goes **0.655 → 0.707** (now beats the LSTM's 0.692), K=8 goes
-**0.786 → 0.804** (+0.061 over dHBV1.1p). Third instance of the draw-share
-lever: K=0 at 1/6 share (+0.055 when fixed), and the self-da tail below.
+**Baseline provenance.** LSTM temporal: 3-seed e100 median **0.687**
+(0.676/0.688/0.699) — confirms the e50 single-seed 0.692 was converged, so
+the e50 PUB values (0.666/0.545) are probably sound but unrefreshed.
+dHBV1.1p **0.7431**: released dMG config, exact protocol, single seed (see
+"Reading the results"). Feng 2022's LSTM 0.719 on this split is NLDAS
+forcing — not comparable to our Daymet runs.
 
-**Self-da diagnosis (2026-09-01): a lag-+2 echo, not a broken port.** The
-first self-da run (uniform tail) scored 0.303 at K=0 — *below* the
-persistence floor — and its predictions correlate best with the observation
-from two days earlier in 490/531 basins (K=4, with concurrent neighbours,
-stays at lag 0 and 0.764). Mechanism: eval scores only the window's LAST
-position, and a uniform 1..31-day tail trains that position with its nearest
-observation ~16 days away on average, so the model learns a stale smoothed
-echo there. Not an implementation bug — the identical eval code scores the
-self-ctx checkpoints correctly. `--self-da-max-tail` applies the same fix;
-the patch-1 fixed-tail run (the DI-LSTM analog, Feng et al. 2020: Q at t−1
-as input, ~0.86 on these basins) is `pub531_p1_selfda_t1_e800`.
+**Donor-baseline discipline.** All donor baselines (nn / ctx_mean / idw)
+read the SAME window the model's context read — for mode B the historical
+window, never the eval slice (reading the eval slice hands them concurrent
+discharge the model was denied; it reversed a mode-B table once). In
+recent-obs mode the query's self-slot is excluded from the donor set.
 
-**Patch-1 rerun (2026-08-31, `pub531_p1_recobs_e800`): finer patches alone
-do NOT close it.** `--patch 1 --win 64 --self-ctx-p 0.4 --recent-obs 1`
-(own gauge visible through yesterday, every day scored at lead 1), same
-800×150×8 budget: K=0 **0.626** (below patch-16's 0.655), K=4 **0.775**
-(vs 0.785). Two confounds before "the gap is real at any granularity" can
-be claimed: (a) 64-day windows mean 8× fewer scored days per task view at
-the same view count — and the K=0 arm shows the undertraining fingerprint
-(FHV −21.9 %); (b) the own gauge entered as a CONTEXT SITE (`self_ctx`),
-whereas the 671-era 0.8765 specialist used the `--self-da` channel — own
-history in the query's own token stream — and self-as-context losing to
-self-da is itself an established 671-era result. The self-da port is the
-next test; until then (iii) stands: own-gauge assimilation has not matched
-the gauged baselines (LSTM 0.692, dHBV1.1p 0.743) in any configuration.
+### Caveats before anything is quoted externally
 
-**Mode B final (2026-08-30, all 10 folds).** Three findings, in decreasing
-order of importance:
+Single seed everywhere except the temporal LSTM (3 seeds). Specifically
+single-seed: every PUBModel row, the dHBV1.1p reference, the mode-B
+regularizer claim (0.707 vs 0.682 — one comparison; needs a second seed
+before it is load-bearing), and the PUB LSTM references.
 
-1. **The training draw is the prize, not the eval-time context.** Mode-B
-   training lifts the no-context arm from 0.6820 (mode-A training) to
-   **0.7071** — past LSTM+dHBV1.1p (0.700). Aligned-historical draws act as a
-   forward-arm regularizer; this was sighted per-fold twice and now holds at
-   the aggregate (+0.025). The best no-context number in the suite comes
-   from the mode-B checkpoint.
-2. **Eval-time historical context is nearly inert**: K=8 0.7084 vs K=0
-   0.7071 (+0.001). Same-DOY flows from a 6-year offset carry climatology,
-   which the forcings already imply.
-3. **IDW-on-history is worthless** (−0.44 to −0.51 median NSE; nn −0.56):
-   interpolating wrong-year discharge is far worse than predicting the mean.
-   So "beat IDW with mode B" is trivially true; the meaningful bar is
-   CONCURRENT IDW (0.645), which even the mode-B K=0 arm clears by +0.06 —
-   an operator with no live gauges at all beating one who interpolates them.
+### Open
 
-Caveat on (1): mode-A and mode-B checkpoints differ only in the context
-period of training draws, same seed/budget — but it is a single seed, and
-0.7071 vs 0.6820 is one comparison. Rerun with a second seed before making
-the regularizer claim load-bearing.
-
-Provisional trajectory that motivated the budget change (PUB spatial, K=0
-median NSE): e40 **0.265** → e200 **~0.50** (5 folds) → e800 fold-0 **0.630**
-— still climbing at 32× the original default budget. The context gain shrinks
-correspondingly (fold-0: +0.14 at e200 → +0.06 at e800): concurrent
-neighbours were partly compensating for an undertrained forward arm.
-
-Mode B's port carries the baseline discipline from train_pub: donor baselines
-read the HISTORICAL context window, never the eval slice — reading the eval
-slice hands them concurrent discharge the model was denied, which reversed a
-mode-B table once already.
-
+1. The DI-LSTM gap on the own-gauge stream (0.707 vs ~0.86).
+2. Second seed for the mode-B regularizer claim.
+3. DEM-as-attribute-imputer experiment (checkpointed 3-fold PUB run
+   `pub531_ckpt3_e800` in progress; controls: mean / climate-derived /
+   lat-lon-kriged / +DEM statics, stratified by distance to training).
 
 ---
 
