@@ -288,8 +288,16 @@ def main(a):
             tot = 0.0
             for _ in range(a.steps):
                 # per STEP, not per task: self-ctx adds a site, and a
-                # per-task draw makes S ragged within the batch
-                step_self = (int(rng.integers(1, a.win // 2))
+                # per-task draw makes S ragged within the batch.
+                # TAIL LENGTH: uniform over 1..win/2 by default, so the
+                # configuration actually evaluated (--recent-obs, i.e. the
+                # SHORTEST tail) is seen on only ~1/15 of the draws that
+                # fire. --self-ctx-max-tail caps the draw so the eval
+                # configuration is common in training -- the draw-share
+                # lever that was worth +0.055 when K=0 had the same problem.
+                hi = (a.self_ctx_max_tail + 1 if a.self_ctx_max_tail
+                      else a.win // 2)
+                step_self = (int(rng.integers(1, hi))
                              if rng.random() < a.self_ctx_p else 0)
                 K = int(rng.choice(k_train))
                 tasks = []
@@ -431,6 +439,11 @@ if __name__ == "__main__":
     ap.add_argument("--self-ctx-p", type=float, default=0.0,
                     help="TRAIN: probability a step adds the query as its "
                          "own context site with a random hidden tail")
+    ap.add_argument("--self-ctx-max-tail", type=int, default=0, metavar="P",
+                    help="TRAIN: cap the hidden tail of the self-context "
+                         "draw at P patches (default 0 = uniform 1..win/2). "
+                         "Set it near --recent-obs so the evaluated "
+                         "configuration is actually common in training.")
     ap.add_argument("--self-da", action="store_true",
                     help="own history in the QUERY'S OWN token stream "
                          "(self-attention) rather than as a context site. "
