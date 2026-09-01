@@ -198,7 +198,7 @@ reference row on THIS protocol:
 |---|---|---|---|---|
 | i | forward (K=0) and mode-A context vs LSTM / dHBV1.1p | **K=0 0.682 · K=4 0.751** (all 10 folds) | LSTM 0.666 · LSTM+dHBV1.1p 0.700 · StefaLand 0.721 · IDW 0.645 | **DONE — K=0 beats the LSTM (+0.016); K=4 beats every reference** (+0.051 over dHBV1.1p+LSTM, +0.106 over IDW); mode-B-trained K=0 goes higher still (0.707, row ii) |
 | ii | mode B (historical, DOY-aligned) vs IDW-on-history | **K=0 0.7071 · K=8 0.7084** (all 10 folds) | historical IDW **−0.44 to −0.51** (worthless) · concurrent IDW 0.645 | **DONE — the training draw is the prize**: mode-B-trained K=0 **beats LSTM+dHBV1.1p** (0.707 vs 0.700); eval-time historical context adds only +0.001 |
-| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.707** (draw-share fix, 2026-09-01; was 0.655) | LSTM temporal 0.692 · **dHBV1.1p 0.743** (exact protocol) | **BEATS the LSTM** (+0.015); short of dHBV1.1p by 0.036 |
+| iii | recent-obs (own gauge, 1–16 d lag) vs LSTM | **0.707** (draw-share fix, 2026-09-01; was 0.655) | LSTM temporal **0.687** (3-seed e100: 0.676/0.688/0.699) · **dHBV1.1p 0.743** (exact protocol) | **BEATS the LSTM** (+0.020, spread 0.012); short of dHBV1.1p by 0.036 |
 | iv | context + recent-obs combined vs LSTM / dHBV | K=2 0.798 · K=4 0.802 · K=8 **0.804** (draw-share fix; was 0.786) | LSTM 0.692 · **dHBV1.1p 0.743 (exact protocol)** · δHBV1.1p 0.75 (Jamaat, diff. period) · IDW 0.634 | **DONE — beats all** (+0.112 LSTM, **+0.061 dHBV1.1p**, +0.17 IDW) |
 
 **(iii)/(iv) detail** (temporal, e800, `--self-ctx-p 0.4 --recent-obs 1`,
@@ -236,6 +236,25 @@ real work -- but note what the comparison against the LSTM actually says:
 the LSTM's 0.692 uses forcings and NO own-gauge observations, so at 0.655 we
 are losing while holding STRICTLY MORE information than the model that beats
 us. That, not the raw gap, is the indictment.
+
+**Forward temporal, for completeness (2026-09-01,
+`pub531_temporal_fwd_e800`): the picture inverts from PUB.** Pure forward
+(no gauge data anywhere) on the gauged temporal split: K=0 **0.640** — behind
+the 3-seed LSTM 0.687 (−0.047) and dHBV1.1p 0.743 (−0.10). On their home
+turf (test basin in training, 15-year test span) the specialists lead the
+forward arm; on ungauged basins (suite i) we match them. Context flips it as
+always: K=4 **0.773** (+0.030 over dHBV1.1p), and the full stack reaches
+0.804. The 3-seed e100 LSTM sweep also CONFIRMS the old bar rather than
+raising it (median 0.687 vs the e50 single-seed 0.692) — that baseline was
+not soft; Feng 2022's 0.719 is an NLDAS-forcing number.
+
+**Self-da with the fixed tail (2026-09-01, `pub531_p1_selfda_t1_e800`):
+the fix works, the channel still loses.** K=0 0.303 → **0.668** with
+`--self-da-max-tail 1` — confirming the lag-echo diagnosis — but still below
+the patch-16 self-context 0.707. At this budget, routing own history through
+cross-attention beats the own-token-stream channel, reversing the 671-era
+ranking. The gap to DI-LSTM (~0.86, Feng et al. 2020, lead-1) is now the
+genuine open problem on this task: real, not an artifact, and unexplained.
 
 **Draw-share fix (2026-09-01, `pub531_drawshare_e800`): the gap was mostly
 undertraining of the evaluated configuration.** The self-context draw fired
