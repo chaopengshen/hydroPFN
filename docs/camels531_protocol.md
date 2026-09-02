@@ -326,6 +326,28 @@ Findings, honest on both sides:
 4. DEM alone at 0.238 (topo 0.404) confirms real signal — just redundant
    with location + climate wherever a table exists nearby.
 
+**PUR rerun (new terrain, median 269 km to the nearest table entry — the
+honest venue, per CS's objection that PUB measures interpolation's home
+advantage):** everything collapses — KRIG 0.833→0.196, CLIM+KRIG 0.249 —
+and DEM's honest increment is **+0.010 overall, +0.030 on topography**.
+The deepest fact: NO tier predicts soils/geology in new terrain (all ~0 or
+negative; DEM-alone's +0.011 is the best single soil predictor, at a level
+that is still nothing). Subsurface attributes in unseen regions are an open
+problem for every method — the strongest motivation for the
+geology-as-target work. DEM-alone goes negative overall under PUR (−0.05):
+the location-fingerprint failure mode, measured cleanly.
+
+**Reverse direction (CS's question: do statics support reconstructing the
+DEM?)** Weakly yes, above the right controls: predicting DEM PCs under PUR,
+variance-weighted R² — lat/lon 0.008, climate 0.036, **26 statics 0.069**
+(top-2 PCs ≈ 0.22/0.21), DEM-kriged-from-neighbours **−0.058**. Two
+readings: there is real cross-modal latent structure for a connector
+(statics beat location and climate), and **terrain features do not krige
+across regions at all** while attributes krige at 0.83 within them —
+terrain is local texture, attributes are smooth fields. That asymmetry is
+both why DEM could matter where tables are missing and why its linear
+payoff is small.
+
 Consequence: the DEM arm's defensible pitches remain **geology as a
 target** (lithology 0.59→0.64, age 0.37→0.44 — no curated table exists) and
 the future 2D-field arm — NOT statics imputation on any landscape with a
