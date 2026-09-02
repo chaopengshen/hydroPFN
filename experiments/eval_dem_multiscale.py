@@ -56,7 +56,7 @@ def main(a):
     rng = np.random.default_rng(0)
     specs = [(t.split(",")[0], float(t.split(",")[1]), float(t.split(",")[2]))
              for t in a.levels.split(";")]
-    P, S, src = load_levels(specs)
+    P, S, src, _ids = load_levels(specs)
     mu = P.mean((1, 2), keepdims=True)
     sd = P.std((1, 2), keepdims=True) + 1e-6
     Z = (P - mu) / sd

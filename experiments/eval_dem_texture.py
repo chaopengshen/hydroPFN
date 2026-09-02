@@ -86,7 +86,7 @@ def main(a):
     rng = np.random.default_rng(0)
     specs = [(t.split(",")[0], float(t.split(",")[1]), float(t.split(",")[2]))
              for t in a.levels.split(";")]
-    P, S, src = load_levels(specs)
+    P, S, src, _ids = load_levels(specs)
     ck0 = torch.load(a.ckpt, map_location="cpu")
     vnorm = bool(ck0.get("valid_norm", False)) or a.force_valid_norm
     if vnorm:
