@@ -97,7 +97,7 @@ class DenoiseUNet(nn.Module):
     """Small time-conditioned U-Net (128 -> 16 -> 128), ~8M params at w=64."""
 
     def __init__(self, w: int = 64, temb: int = 64, in_ch: int = 1,
-                 scale_cond: bool = False):
+                 scale_cond: bool = False, attr_cond: int = 0):
         """in_ch=1 unconditional; in_ch=3 conditional inpainting, where the
         extra channels are (known * mask, mask).
 
@@ -129,6 +129,18 @@ class DenoiseUNet(nn.Module):
         if scale_cond:
             self.smlp = nn.Sequential(nn.Linear(2, td), nn.SiLU(),
                                       nn.Linear(td, td))
+        # ATTRIBUTE CONDITIONING. Same mechanism as scale: an additive term
+        # on the time embedding. Input is the site's curated statics
+        # (z-scored) plus a presence bit; patches without a gauge -- and,
+        # under attr-dropout, a fraction of those with one -- get the all-
+        # zero null token, so one checkpoint serves both conditional and
+        # unconditional readout and the paired eval (true attrs vs null on
+        # identical tiles/masks) is the test of whether site data sharpens
+        # terrain generation.
+        self.attr_cond = attr_cond
+        if attr_cond:
+            self.amlp = nn.Sequential(nn.Linear(attr_cond, td), nn.SiLU(),
+                                      nn.Linear(td, td))
         self.inp = nn.Conv2d(in_ch, w, 3, 1, 1)
         self.d1 = Block(w, w, td)
         self.d2 = Block(w, w * 2, td)
@@ -140,10 +152,12 @@ class DenoiseUNet(nn.Module):
         self.out = nn.Sequential(nn.GroupNorm(8, w), nn.SiLU(),
                                  nn.Conv2d(w, 1, 3, 1, 1))
 
-    def forward(self, x, t, scale=None):
+    def forward(self, x, t, scale=None, attrs=None):
         e = self.temb(t)
         if self.scale_cond and scale is not None:
             e = e + self.smlp(scale.to(e.dtype))
+        if self.attr_cond and attrs is not None:
+            e = e + self.amlp(attrs.to(e.dtype))
         h1 = self.d1(self.inp(x), e)                      # 128, w
         h2 = self.d2(F.avg_pool2d(h1, 2), e)              # 64,  2w
         h3 = self.d3(F.avg_pool2d(h2, 2), e)              # 32,  2w
@@ -200,7 +214,7 @@ class Diffusion:
         n = torch.randn_like(x0)
         return F.mse_loss(net(self.q_sample(x0, t, n), t, scale), n)
 
-    def loss_cond(self, net, x0, mask, cond=None, scale=None):
+    def loss_cond(self, net, x0, mask, cond=None, scale=None, attrs=None):
         """Conditional inpainting loss.  Noise is predicted everywhere but
         scored ONLY in the hole: outside it the answer is handed to the net as
         input, so scoring there would reward copying and drown the part we
@@ -210,14 +224,15 @@ class Diffusion:
         xt = self.q_sample(x0, t, n)
         inp = torch.cat([xt, cond if cond is not None else x0 * mask, mask],
                         dim=1)
-        pred = net(inp, t, scale)
+        pred = net(inp, t, scale, attrs)
         tgt = self._target(x0, n, t)
         hole = 1.0 - mask
         return ((pred - tgt) ** 2 * hole).sum() / hole.sum().clamp(min=1.0)
 
     @torch.no_grad()
     def ddim_cond(self, net, known, mask, steps: int = 50,
-                  resample: int = 2, ctx_override=None, scale=None):
+                  resample: int = 2, ctx_override=None, scale=None,
+                  attrs=None):
         """DDIM with the context supplied as input channels.
 
         `resample` implements RePaint's jump-back: after each step, re-noise
@@ -235,7 +250,7 @@ class Diffusion:
             for u in range(resample):
                 tb = torch.full((B,), int(t), device=known.device,
                                 dtype=torch.long)
-                pred = net(torch.cat([x, ctx], dim=1), tb, scale)
+                pred = net(torch.cat([x, ctx], dim=1), tb, scale, attrs)
                 eps, x0 = self._to_eps_x0(pred, x, tb)
                 x0 = x0.clamp(-6, 6)
                 x0 = mask * known + (1 - mask) * x0

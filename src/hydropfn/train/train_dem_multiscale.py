@@ -44,22 +44,31 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def load_levels(specs):
-    """[(path, metres_per_pixel, footprint_km)] -> stacked patches + scale."""
-    P, S, src = [], [], []
+    """[(path, metres_per_pixel, footprint_km)] -> patches, scale, src, ids.
+
+    `ids` carries each patch's site_id where the level file has one (the
+    CAMELS gauge corpora), else "" -- the attribute-conditioning path keys
+    on it, and everything without an id gets the null attr token.
+    """
+    P, S, src, ids = [], [], [], []
     for path, mpp, km in specs:
         z = np.load(path, allow_pickle=True)
         a = z["patches"] if "patches" in z else z["dem"]
         ok = z["ok"] if "ok" in z else np.ones(len(a), bool)
-        a = a[ok].astype(np.float32)
+        sid = (np.asarray(z["site_id"]).astype(str) if "site_id" in z
+               else np.full(len(a), "", dtype=object))
+        a, sid = a[ok].astype(np.float32), sid[ok]
         good = np.isfinite(a).all((1, 2))
-        a = a[good]
+        a, sid = a[good], sid[good]
         P.append(a)
         S.append(np.tile([np.log10(mpp), np.log10(km)],
                          (len(a), 1)).astype(np.float32))
         src.append(np.full(len(a), f"{km:g}km", dtype=object))
+        ids.append(sid)
         print(f"  {path.split('/')[-1]:26s} {len(a):6,d} patches  "
               f"{mpp:>5.0f} m/px  {km:>5.1f} km")
-    return np.concatenate(P), np.concatenate(S), np.concatenate(src)
+    return (np.concatenate(P), np.concatenate(S), np.concatenate(src),
+            np.concatenate(ids))
 
 
 def sample_holes_orig(n, size, rng, device):
@@ -128,7 +137,39 @@ def main(a):
         path, mpp, km = tok.split(",")
         specs.append((path, float(mpp), float(km)))
     print("levels:")
-    P, S, src = load_levels(specs)
+    P, S, src, ids = load_levels(specs)
+
+    # ---- attribute conditioning table (site_id -> z-scored statics + bit)
+    Att = np.zeros((len(P), 1), np.float32)      # placeholder when unused
+    n_attr = 0
+    if a.attr_npz:
+        za = np.load(a.attr_npz, allow_pickle=True)
+        amat = za["attrs"].astype(np.float64)
+        amu = np.nanmean(amat, 0)
+        asd = np.nanstd(amat, 0) + 1e-9
+        amat = (np.where(np.isfinite(amat), amat, amu) - amu) / asd
+        table = {str(sid_): amat[i]
+                 for i, sid_ in enumerate(np.asarray(za["site_id"]).astype(str))}
+        n_attr = amat.shape[1] + 1               # + presence bit
+        Att = np.zeros((len(P), n_attr), np.float32)
+        hit = 0
+        for i, sid_ in enumerate(ids):
+            v = table.get(str(sid_))
+            if v is not None:
+                Att[i, :-1] = v
+                Att[i, -1] = 1.0
+                hit += 1
+        print(f"  attrs attached to {hit:,} of {len(P):,} patches "
+              f"({n_attr - 1} statics + presence bit)")
+        if a.attr_holdout:
+            pref = tuple(a.attr_holdout.split(","))
+            drop = np.array([str(i_).startswith(pref) and len(str(i_)) == 8
+                             for i_ in ids])
+            print(f"  HOLDOUT: excluding {drop.sum():,} gauge patches "
+                  f"(HUC2 {a.attr_holdout}) from training entirely")
+            keep = ~drop
+            P, S, src, ids, Att = P[keep], S[keep], src[keep], ids[keep],                 Att[keep]
+        np.savez(LOGS / f"attr_norm_{a.tag}.npz", mu=amu, sd=asd)
     print(f"  TOTAL {len(P):,} patches\n")
 
     if a.valid_norm:
@@ -152,7 +193,8 @@ def main(a):
     va, tr = perm[:n_val], perm[n_val:]
     print(f"train {len(tr):,}  val {len(va):,}")
 
-    net = DenoiseUNet(w=a.width, in_ch=3, scale_cond=True).to(DEVICE)
+    net = DenoiseUNet(w=a.width, in_ch=3, scale_cond=True,
+                      attr_cond=n_attr).to(DEVICE)
     # v-prediction was part of the winning recipe (allfix.pt stores
     # param='v'), and for a texture-motivated sampler it is arguably the
     # core of it: eps-prediction underweights the low-SNR steps where fine
@@ -173,6 +215,7 @@ def main(a):
            if a.ema > 0 else None)
     Zt = torch.tensor(Z)
     St = torch.tensor(S)
+    At = torch.tensor(Att) if n_attr else None
     t0 = time.time()
     for step in range(1, a.steps + 1):
         b = rng.choice(tr, size=a.batch, replace=False)
@@ -184,6 +227,16 @@ def main(a):
             # Same reasoning as modality dropout elsewhere in this project.
             k = (torch.rand(len(sc), 1, device=DEVICE) > a.scale_dropout)
             sc = sc * k
+        at = None
+        if n_attr:
+            at = At[b].to(DEVICE)
+            if a.attr_dropout > 0:
+                # null out attrs on a fraction of bearing rows, so the model
+                # keeps an unconditional mode and the paired attrs-vs-null
+                # eval reads one checkpoint (classifier-free style)
+                k = (torch.rand(len(at), 1, device=DEVICE)
+                     > a.attr_dropout).float()
+                at = at * k
         holes = sample_holes_orig if a.orig_masks else sample_holes
         m = holes(len(b), Z.shape[-1], rng, DEVICE)
         if a.valid_norm:
@@ -213,9 +266,10 @@ def main(a):
             # of 1.0 -- a blur that still beat harmonic (0.017) because
             # harmonic is maximally smooth.
             h = harmonic_torch(x0 * m, m)
-            loss = diff.loss_cond(net, x0 - h, m, cond=h, scale=sc)
+            loss = diff.loss_cond(net, x0 - h, m, cond=h, scale=sc,
+                                  attrs=at)
         else:
-            loss = diff.loss_cond(net, x0, m, scale=sc)
+            loss = diff.loss_cond(net, x0, m, scale=sc, attrs=at)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step(); sched.step()
@@ -250,7 +304,9 @@ def main(a):
     out = LOGS / f"dem_ms_{a.tag}.pt"
     save = {"net": net.state_dict(), "levels": a.levels,
             "scale_cond": True, "residual": a.residual,
-            "valid_norm": a.valid_norm, "param": a.param}
+            "valid_norm": a.valid_norm, "param": a.param,
+            "attr_cond": n_attr, "attr_npz": a.attr_npz,
+            "attr_holdout": a.attr_holdout}
     if ema is not None:
         save["ema"] = ema
     torch.save(save, out)
@@ -278,6 +334,14 @@ if __name__ == "__main__":
     ap.add_argument("--residual", action="store_true",
                     help="predict the residual over a harmonic fill")
     ap.add_argument("--scale-dropout", type=float, default=0.1)
+    ap.add_argument("--attr-npz", default=None,
+                    help="npz with site_id + attrs; patches whose level file "
+                         "carries a matching site_id are attribute-"
+                         "conditioned, everything else gets the null token")
+    ap.add_argument("--attr-dropout", type=float, default=0.3)
+    ap.add_argument("--attr-holdout", default=None,
+                    help="comma HUC2 prefixes; gauge patches matching are "
+                         "EXCLUDED from training for the paired eval")
     ap.add_argument("--log-every", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="v1")
