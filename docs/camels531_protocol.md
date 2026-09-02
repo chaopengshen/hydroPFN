@@ -287,9 +287,51 @@ before it is load-bearing), and the PUB LSTM references.
 
 1. The DI-LSTM gap on the own-gauge stream (0.707 vs ~0.86).
 2. Second seed for the mode-B regularizer claim.
-3. DEM-as-attribute-imputer experiment (checkpointed 3-fold PUB run
-   `pub531_ckpt3_e800` in progress; controls: mean / climate-derived /
-   lat-lon-kriged / +DEM statics, stratified by distance to training).
+3. DEM statics value: stage 2 (imputed statics through the frozen model;
+   `pub531_ckpt3_e800` checkpoints in progress). Stage 1 is DONE — see
+   "DEM as attribute imputer" below.
+
+
+### DEM as attribute imputer — stage 1 (2026-09-01, `experiments/dem_imputer.py`)
+
+Can each input tier reconstruct the 26 curated statics on held-out PUB
+groups? Out-of-fold ridge (per-tier alpha CV), leave-one-PUB-group-out.
+CLIM = 11 climate indices computed from the basin's own forcings; KRIG =
+statics IDW-interpolated from training basins; DEM = 768-dim multi-scale
+diffusion features (parity checkpoint, 12.8 km, PCA-32 per fold — raw dims
+cripple the shared ridge alpha and read falsely negative, −0.05).
+
+| tier | all | climate | topo | veg | soil | geol |
+|---|---|---|---|---|---|---|
+| CLIM | 0.695 | 0.925 | 0.768 | 0.702 | 0.233 | 0.092 |
+| KRIG | 0.833 | 0.881 | 0.845 | 0.857 | 0.663 | 0.512 |
+| CLIM+KRIG | 0.834 | 0.888 | 0.846 | 0.856 | 0.663 | 0.512 |
+| +DEM | 0.836 | 0.891 | 0.854 | 0.852 | 0.661 | 0.512 |
+| DEM alone | 0.238 | 0.247 | 0.404 | 0.284 | 0.174 | 0.082 |
+
+Findings, honest on both sides:
+
+1. **On CAMELS, location interpolation saturates the imputation problem**
+   (KRIG 0.833): attributes are spatially smooth at CONUS gauge density, so
+   DEM is almost entirely redundant. The typical attribute gains +0.002.
+2. **DEM's far-from-training gains are OROGRAPHIC, not subsurface** —
+   p_mean 0.80→0.88, frac_snow 0.87→0.92, aridity +0.03 in the far half;
+   soils +0.003, geology −0.001. Terrain makes weather; the registered
+   prediction (gains concentrated in soils/geology) was half wrong.
+3. **The donor-exclusion curve** (kriging donors forbidden within R km —
+   the global-sparse regime manufactured on CONUS): DEM delta ≈ 0 at
+   R ≤ 200 km, and at **R = 400 km soils flip to +0.038** while geology
+   never gains at any radius. The statics-imputation claim survives only in
+   the extreme-sparse regime, only for soils, and thinly.
+4. DEM alone at 0.238 (topo 0.404) confirms real signal — just redundant
+   with location + climate wherever a table exists nearby.
+
+Consequence: the DEM arm's defensible pitches remain **geology as a
+target** (lithology 0.59→0.64, age 0.37→0.44 — no curated table exists) and
+the future 2D-field arm — NOT statics imputation on any landscape with a
+mapped attribute table. Stage 2 (imputed statics through the frozen 531
+model) will quantify how little the model's NSE cares, and the expectation
+is now: barely.
 
 ---
 
