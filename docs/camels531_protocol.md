@@ -348,6 +348,29 @@ terrain is local texture, attributes are smooth fields. That asymmetry is
 both why DEM could matter where tables are missing and why its linear
 payoff is small.
 
+**The generative direction is also null (2026-09-03,
+`experiments/dem_attr_eval.py`).** An attribute-conditioned sampler
+(statics + presence bit as a third additive term on the time embedding,
+30% attr-dropout, HUC2 01/11/17 gauges excluded from training; commit
+`34e4b6d`) was sampled on the held-out gauges' tiles twice under identical
+masks and noise — true attrs vs null token. Result: a tie. 12.8 km psd
+0.401 vs 0.384, elev RMSE 0.3751 vs 0.3749, paired win counts 27–43/64
+(coin-flip except a whisper on slope-W1 at one scale, absent at the other).
+Two caveats keep this from over-claiming: additive global conditioning is
+the weakest coupling (a bias vector cannot paint spatial structure —
+cross-attention or per-layer FiLM could carry more), and basin-integrated
+scalar statics are spatially unlocalized, a poor match for specifying local
+texture. But at this budget the reverse probe's ~0.2 R² does not cash out
+generatively. Note for the 2D-field arm: its conditioning will be
+*localized point measurements* (wells), a categorically stronger signal
+than basin scalars — this null does not transfer to that design.
+
+**Stage 2 (imputed statics through the frozen model) is closed by
+redundancy**: with the forward probe (+0.002), the new-terrain probe
+(+0.010) and the generative pair all reading null, the NSE-through-statics
+question is answered three ways; the `pub531_ckpt3_e800` fold checkpoints
+(0.727/0.75 heldout-fold NSE) are saved if anyone wants the fourth.
+
 Consequence: the DEM arm's defensible pitches remain **geology as a
 target** (lithology 0.59→0.64, age 0.37→0.44 — no curated table exists) and
 the future 2D-field arm — NOT statics imputation on any landscape with a
