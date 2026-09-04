@@ -1,0 +1,8 @@
+benchmark,label,extent,basins,train_start,train_end,test_start,test_end,train_days,scored_days,warmup_days,n_folds,fold_sizes,note
+peijun_li,Peijun Li Ensemble,PUB,531,1980-10-01,1999-09-30,1995-10-01,1999-09-30,6939,1461,365,10,54 48 45 46 57 60 44 60 61 56,"spatial generalization; train and test periods overlap, which is not a leak because the basins are disjoint"
+peijun_li,Peijun Li Ensemble,PUR,531,1980-10-01,1999-09-30,1995-10-01,1999-09-30,6939,1461,365,7,92 95 93 51 68 60 72,"spatial generalization; train and test periods overlap, which is not a leak because the basins are disjoint"
+feng2023,Dapeng Feng 2023,PUB,531,1989-10-01,1999-09-30,1989-10-01,1999-09-30,3652,3652,365,10,54 48 45 46 57 60 44 60 61 56,"trained and tested in the SAME period, different basins"
+feng2023,Dapeng Feng 2023,PUR,531,1989-10-01,1999-09-30,1989-10-01,1999-09-30,3652,3652,365,7,92 95 93 51 68 60 72,"trained and tested in the SAME period, different basins"
+leo10_531,10 years 531 Leo,temporal,531,1999-10-01,2008-09-30,1989-10-01,1999-09-30,3288,3652,365,1,531,"the test period PRECEDES the training period -- backwards in time, and deliberately so"
+leo15_671,15 years 671 Leo,temporal,671,1980-10-01,1995-09-30,1995-10-01,2010-09-30,5478,5479,365,1,671,"all 671 CAMELS basins, not the 531 subset"
+leo15_531,15 years 531 (legacy temporal),temporal,531,1980-10-01,1995-09-30,1995-10-01,2010-09-30,5478,5479,365,1,531,same periods as leo15_671 on the 531 subset

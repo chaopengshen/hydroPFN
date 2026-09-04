@@ -1,0 +1,223 @@
+lstm|lstm|peijun_li|PUB|50|
+unitA|encoder|peijun_li|PUB|50|
+pubC|pub|peijun_li|PUB|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|peijun_li|PUB|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|peijun_li|PUB|200|
+pubC|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|peijun_li|PUR|50|
+unitA|encoder|peijun_li|PUR|50|
+pubC|pub|peijun_li|PUR|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|peijun_li|PUR|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|peijun_li|PUR|200|
+pubC|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|feng2023|PUB|50|
+unitA|encoder|feng2023|PUB|50|
+pubC|pub|feng2023|PUB|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|feng2023|PUB|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|feng2023|PUB|200|
+pubC|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|feng2023|PUR|50|
+unitA|encoder|feng2023|PUR|50|
+pubC|pub|feng2023|PUR|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|feng2023|PUR|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|feng2023|PUR|200|
+pubC|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|leo10_531|temporal|50|
+lstm|lstm|leo10_531|temporal|200|
+unitA|encoder|leo10_531|temporal|50|
+pubC|pub|leo10_531|temporal|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo10_531|temporal|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|leo10_531|temporal|200|
+pubC|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|leo15_671|temporal|50|
+lstm|lstm|leo15_671|temporal|200|
+unitA|encoder|leo15_671|temporal|50|
+pubC|pub|leo15_671|temporal|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo15_671|temporal|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|leo15_671|temporal|200|
+pubC|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|leo15_531|temporal|50|
+lstm|lstm|leo15_531|temporal|200|
+unitA|encoder|leo15_531|temporal|50|
+pubC|pub|leo15_531|temporal|50|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo15_531|temporal|50|--k-eval 0,1,2,4,8 --context-period historical
+unitA|encoder|leo15_531|temporal|200|
+pubC|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent
+pubH|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical
+lstm|lstm|peijun_li|PUB|200|
+lstm|lstm|peijun_li|PUR|200|
+lstm|lstm|feng2023|PUB|200|
+lstm|lstm|feng2023|PUR|200|
+pubL16|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 16
+pubL32|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 32
+pubL64|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 64
+pubL128|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 128
+pubL16|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 16
+pubL32|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 32
+pubL64|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 64
+pubL128|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 128
+pubL16|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 16
+pubL32|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 32
+pubL64|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 64
+pubL128|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 128
+pubL1|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1
+pubL3|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 3
+pubL7|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7
+pubL1|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1
+pubL3|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 3
+pubL7|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7
+pubL1|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1
+pubL3|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 3
+pubL7|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7
+unitA|encoder|peijun_li|PUB|200||1
+pubC|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+unitA|encoder|peijun_li|PUR|200||1
+pubC|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+unitA|encoder|feng2023|PUB|200||1
+pubC|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+unitA|encoder|feng2023|PUR|200||1
+pubC|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+lstm|lstm|leo10_531|temporal|200||1
+unitA|encoder|leo10_531|temporal|200||1
+pubC|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+lstm|lstm|leo15_671|temporal|200||1
+unitA|encoder|leo15_671|temporal|200||1
+pubC|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+lstm|lstm|leo15_531|temporal|200||1
+unitA|encoder|leo15_531|temporal|200||1
+pubC|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|1
+lstm|lstm|peijun_li|PUB|200||1
+lstm|lstm|peijun_li|PUR|200||1
+lstm|lstm|feng2023|PUB|200||1
+lstm|lstm|feng2023|PUR|200||1
+unitA|encoder|peijun_li|PUB|200||2
+pubC|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+unitA|encoder|peijun_li|PUR|200||2
+pubC|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+unitA|encoder|feng2023|PUB|200||2
+pubC|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+unitA|encoder|feng2023|PUR|200||2
+pubC|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+lstm|lstm|leo10_531|temporal|200||2
+unitA|encoder|leo10_531|temporal|200||2
+pubC|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+lstm|lstm|leo15_671|temporal|200||2
+unitA|encoder|leo15_671|temporal|200||2
+pubC|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+lstm|lstm|leo15_531|temporal|200||2
+unitA|encoder|leo15_531|temporal|200||2
+pubC|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent|2
+lstm|lstm|peijun_li|PUB|200||2
+lstm|lstm|peijun_li|PUR|200||2
+lstm|lstm|feng2023|PUB|200||2
+lstm|lstm|feng2023|PUR|200||2
+pubCcausal|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubCcausal|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|0
+pubL1|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|0
+pubL1|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|0
+pubL7|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|0
+pubL1|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|0
+pubL7|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|0
+pubL1|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|0
+pubL7|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|0
+pubL1|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|0
+pubL7|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubL1|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|1
+pubL1|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 1|2
+pubL7|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|1
+pubL7|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period historical --context-lag-days 7|2
+pubCcausal|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+pubCcausal|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|1
+pubCcausal|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --causal|2
+lstm|lstm|peijun_li|PUB|50||1
+lstm|lstm|peijun_li|PUB|50||2
+lstm|lstm|peijun_li|PUR|50||1
+lstm|lstm|peijun_li|PUR|50||2
+lstm|lstm|feng2023|PUB|50||1
+lstm|lstm|feng2023|PUB|50||2
+lstm|lstm|feng2023|PUR|50||1
+lstm|lstm|feng2023|PUR|50||2
+lstm|lstm|leo10_531|temporal|50||1
+lstm|lstm|leo10_531|temporal|50||2
+lstm|lstm|leo15_671|temporal|50||1
+lstm|lstm|leo15_671|temporal|50||2
+lstm|lstm|leo15_531|temporal|50||1
+lstm|lstm|leo15_531|temporal|50||2
+lstmD0.1H256|lstm|peijun_li|PUB|50|--dropout 0.1 --hidden 256|0
+lstmD0.1H512|lstm|peijun_li|PUB|50|--dropout 0.1 --hidden 512|0
+lstmD0.25H256|lstm|peijun_li|PUB|50|--dropout 0.25 --hidden 256|0
+lstmD0.25H512|lstm|peijun_li|PUB|50|--dropout 0.25 --hidden 512|0
+lstmD0.5H256|lstm|peijun_li|PUB|50|--dropout 0.5 --hidden 256|0
+lstmD0.5H512|lstm|peijun_li|PUB|50|--dropout 0.5 --hidden 512|0
+lstmD0.1H256|lstm|peijun_li|PUR|50|--dropout 0.1 --hidden 256|0
+lstmD0.1H512|lstm|peijun_li|PUR|50|--dropout 0.1 --hidden 512|0
+lstmD0.25H256|lstm|peijun_li|PUR|50|--dropout 0.25 --hidden 256|0
+lstmD0.25H512|lstm|peijun_li|PUR|50|--dropout 0.25 --hidden 512|0
+lstmD0.5H256|lstm|peijun_li|PUR|50|--dropout 0.5 --hidden 256|0
+lstmD0.5H512|lstm|peijun_li|PUR|50|--dropout 0.5 --hidden 512|0
+pubNoPool|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubNoPool|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --no-pooled|0
+pubMix|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|peijun_li|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|peijun_li|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|feng2023|PUB|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|feng2023|PUR|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|leo10_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|leo15_671|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0
+pubMix|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix|0
+pubMixNoPool|pub|leo15_531|temporal|200|--k-eval 0,1,2,4,8 --context-period concurrent --mask-mix --no-pooled|0

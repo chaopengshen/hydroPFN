@@ -88,7 +88,9 @@ def main(a):
     rng = np.random.default_rng(a.seed)
 
     d = load_camels(a.nc)
-    sub, gage = P.load_531(d)
+    n_bas = P.BENCHMARKS[a.protocol]["basins"] \
+        if a.protocol in P.BENCHMARKS else 531
+    sub, gage = P.load_subset(d, n_bas)
     win_p = P.windows(d["time"], a.protocol)
     print(P.describe(a.extent, a.protocol, gage, d["time"]), flush=True)
     print(f"  device {DEVICE} | seed {a.seed} | window "
@@ -232,7 +234,8 @@ if __name__ == "__main__":
     ap.add_argument("--nc", default=P.CAMELS_NC)
     ap.add_argument("--extent", choices=["PUB", "PUR", "temporal"],
                     default="PUB")
-    ap.add_argument("--protocol", choices=["spatial", "temporal"], default=None)
+    ap.add_argument("--protocol", default=None,
+                    choices=["spatial", "temporal"] + list(P.BENCHMARKS))
     ap.add_argument("--patch", type=int, default=16)
     ap.add_argument("--win", type=int, default=32)
     ap.add_argument("--depth", type=int, default=4)
@@ -251,4 +254,10 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.protocol is None:
         args.protocol = "temporal" if args.extent == "temporal" else "spatial"
+    if args.protocol in P.BENCHMARKS:
+        ok = P.BENCHMARKS[args.protocol]["extents"]
+        if args.extent not in ok:
+            raise SystemExit(
+                f"benchmark {args.protocol} defines extents {ok}, "
+                f"not {args.extent!r}")
     main(args)

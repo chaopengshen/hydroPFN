@@ -46,13 +46,32 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hydropfn.data import protocol as P                        # noqa: E402
-from hydropfn.data.forcing import load_camels                  # noqa: E402
+from hydropfn.data.forcing import MASK_KINDS, load_camels      # noqa: E402
 from hydropfn.models.connector import PUBModel                 # noqa: E402
 from hydropfn.models.site_encoder import SiteEncoder           # noqa: E402
 from hydropfn.paths import LOGS                                # noqa: E402
 from hydropfn.train.train_pub import build_task, collate       # noqa: E402
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def patchify_at(Xs, valid, patch, off):
+    """Patchify starting `off` days into the record.
+
+    The default grid is anchored at day 0, so a context window lagged by a
+    non-multiple of `patch` is simply not addressable in it. Query windows
+    always begin on a patch boundary, so for a lag L only ONE offset is ever
+    needed: r = (-L) mod patch. That is one extra array per run, not sixteen.
+    """
+    n = (Xs.shape[1] - off) // patch
+    Xp = np.ascontiguousarray(
+        Xs[:, off:off + n * patch]
+        .reshape(len(Xs), n, patch, Xs.shape[-1]).transpose(0, 1, 3, 2))
+    vp = (valid[:, off:off + n * patch]
+          .reshape(len(valid), n, patch, valid.shape[-1])
+          .transpose(0, 1, 3, 2).min(-1)).astype(np.float32)
+    doy = ((((np.arange(n) * patch) + off) % 365.25) / 365.25).astype(np.float32)
+    return Xp, vp, doy
 
 
 def tile_starts(span_days, patch, win):
@@ -75,7 +94,7 @@ def tile_starts(span_days, patch, win):
 
 def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                    geo_rank, nn_rank, latlon, area, p0, starts, span_days,
-                   obs_col):
+                   obs_col, lag_days=None, ctx_grid=None):
     """Predicted QObs for `te_idx` over the eval span, indexed by DAY.
 
     Returns (n_basins, span_days) on the STANDARDISED scale, plus the donor
@@ -96,6 +115,22 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
 
     for st in starts:
         d0 = st * a.patch          # day offset from the start of the buffer
+        # HISTORICAL context is the SAME calendar window shifted back a whole
+        # number of years, recomputed for every tile. A single fixed context
+        # window (the first implementation) left query patch n paired with a
+        # context patch ~5 months away in day-of-year, and let the lag drift
+        # from 0.4 to 4.0 years across the evaluation -- so the time-aligned
+        # path, which carries essentially all of the signal, was being fed a
+        # neighbour's flow from the wrong season. That measured the
+        # construction, not the hypothesis.
+        # Day-level lag: the context window starts `lag_days` before the
+        # query window, which need not land on a patch boundary. `ctx_grid`
+        # is the record patchified at offset r = (-lag) mod patch, so the
+        # index below is exact.
+        ctx_start = None
+        if lag_days is not None:
+            q0 = (p0 + st) * a.patch
+            ctx_start = (q0 - lag_days - ctx_grid[3]) // a.patch
         for i0 in range(0, len(te_idx), a.batch):
             chunk = te_idx[i0:i0 + a.batch]
             tasks, metas = [], []
@@ -103,19 +138,34 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                 t, sites, sl = build_task(
                     Xp, A_s, valid_p, doy, int(q), ctx_pool, K, erng, a.win,
                     obs_col, a.retrieval, nn_rank, fixed_start=p0 + st,
-                    geo_rank=geo_rank, latlon=latlon if a.geo else None,
+                    geo_rank=geo_rank, ctx_start=ctx_start,
+                    ctx_Xp=None if ctx_grid is None else ctx_grid[0],
+                    ctx_valid_p=None if ctx_grid is None else ctx_grid[1],
+                    ctx_doy=None if ctx_grid is None else ctx_grid[2],
+                    latlon=latlon if a.geo else None,
                     area=area if a.area_scale else None)
+                # The window the CONTEXT sites were read from -- the query's
+                # own window in concurrent mode, an earlier one in historical.
+                csl = sl if ctx_start is None else \
+                    slice(ctx_start, ctx_start + a.win)
                 tasks.append(t)
-                metas.append((int(q), sites, sl))
+                metas.append((int(q), sites, sl, csl))
             b = collate(tasks)
             with torch.no_grad():
                 rec = net(b)
-            for j, (q, sites, sl) in enumerate(metas):
+            for j, (q, sites, sl, csl) in enumerate(metas):
                 i = row[q]
                 buf["p"][i, d0:d0 + wd] = \
                     rec[j][:, obs_col, :].cpu().numpy().ravel()
                 if K > 0:
-                    nb = Xp[sites[1:], sl][..., obs_col, :]   # (K, win, patch)
+                    cXp = Xp if ctx_grid is None else ctx_grid[0]
+                    # csl, NOT sl. Reading `sl` here would hand the donor
+                    # baselines the neighbours' CONCURRENT discharge -- the
+                    # exact information historical mode withholds from the
+                    # model. Diagnosis.md records this bug: the tell was that
+                    # the baseline columns came out byte-identical between the
+                    # two modes.
+                    nb = cXp[sites[1:], csl][..., obs_col, :]  # (K,win,patch)
                     buf["nn"][i, d0:d0 + wd] = nb[0].ravel()
                     buf["cm"][i, d0:d0 + wd] = nb.mean(0).ravel()
                     rel = latlon[sites[1:]] - latlon[sites[0]]
@@ -134,7 +184,9 @@ def main(a):
     rng = np.random.default_rng(a.seed)
 
     d = load_camels(a.nc)
-    sub, gage = P.load_531(d)
+    n_bas = P.BENCHMARKS[a.protocol]["basins"] \
+        if a.protocol in P.BENCHMARKS else 531
+    sub, gage = P.load_subset(d, n_bas)
     win_p = P.windows(d["time"], a.protocol)
     print(P.describe(a.extent, a.protocol, gage, d["time"]), flush=True)
     print(f"  device {DEVICE} | seed {a.seed} | window "
@@ -205,7 +257,8 @@ def main(a):
         enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
                           d_ffd=a.d_ffd, k_summary=a.k_summary)
         net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
-                       geo=a.geo, causal=a.causal).to(DEVICE)
+                       geo=a.geo, causal=a.causal,
+                       no_pooled=a.no_pooled).to(DEVICE)
         if kf == 0:
             print(f"    PUBModel "
                   f"{sum(t.numel() for t in net.parameters()) / 1e6:.1f}M "
@@ -222,6 +275,11 @@ def main(a):
         lo_p = tw.start // a.patch
         hi_p = tw.stop // a.patch - a.win
 
+        lag_tr = (int(round(a.context_lag_days))
+                  if a.context_period == "historical" else None)
+        tr_grid = (None if lag_tr is None else
+                   (*patchify_at(Xs, valid, a.patch, (-lag_tr) % a.patch),
+                    (-lag_tr) % a.patch))
         t0 = time.time()
         for ep in range(a.epochs):
             net.train()
@@ -231,10 +289,24 @@ def main(a):
                 tasks = []
                 for _ in range(a.tasks):
                     q = int(rng.choice(tr_idx))
+                    # Query starts are pushed forward by the lag so the shifted
+                    # context window still lands inside the training period.
+                    q_lo = lo_p + (-(-(lag_tr or 0) // a.patch))
+                    # In historical mode the context window is drawn
+                    # INDEPENDENTLY of the query's, from the training period,
+                    # so the neighbours' concurrent flow is never visible and
+                    # only their long-term behaviour can be learned from.
+                    cs = None
                     t, _, _ = build_task(
                         Xp, A_s, valid_p, doy, q, tr_idx[tr_idx != q], K, rng,
                         a.win, obs, a.retrieval, nn_rank,
-                        geo_rank=geo_train, start_lo=lo_p, start_hi=hi_p,
+                        mask_kind=(str(rng.choice(MASK_KINDS))
+                                   if a.mask_mix else None),
+                        geo_rank=geo_train, start_lo=q_lo, start_hi=hi_p,
+                        ctx_start=cs, ctx_lag=lag_tr, ctx_patch=a.patch,
+                        ctx_Xp=None if tr_grid is None else tr_grid[0],
+                        ctx_valid_p=None if tr_grid is None else tr_grid[1],
+                        ctx_doy=None if tr_grid is None else tr_grid[2],
                         latlon=ll if a.geo else None,
                         area=area_km if a.area_scale else None)
                     tasks.append(t)
@@ -277,10 +349,29 @@ def main(a):
         fold_of.append(np.full(len(te_idx), kf))
         gages.append(gage["gage"].to_numpy()[te_idx])
 
+        # LAGGED context. `lag_days` is a true day-level reporting latency;
+        # the context grid is the record patchified at offset (-lag) mod patch
+        # so the window can start off the 16-day boundary. The window keeps
+        # its full length, so lag and history length are independent.
+        lag_d, ctx_grid = None, None
+        if a.context_period == "historical":
+            lag_d = int(round(a.context_lag_days))
+            off = (-lag_d) % a.patch
+            ctx_grid = (*patchify_at(Xs, valid, a.patch, off), off)
+            if kf == 0:
+                q0 = (p0 + starts[0]) * a.patch
+                c0 = q0 - lag_d
+                print(f"    LAGGED context: neighbours stale by {lag_d} d "
+                      f"(grid offset {off} d). Window keeps "
+                      f"{a.win * a.patch} d of history.", flush=True)
+                print(f"      tile 0: query {d['time'][q0]} "
+                      f"<- context ends {d['time'][c0 + a.win * a.patch - 1]}",
+                      flush=True)
+
         for K in k_eval:
             got = predict_basins(net, Xp, A_s, valid_p, doy, te_idx, tr_idx,
                                  K, a, geo_eval, nn_rank, ll, area_km,
-                                 p0, starts, span, obs)
+                                 p0, starts, span, obs, lag_days=lag_d, ctx_grid=ctx_grid)
             for name, arr in got.items():
                 # standardised -> mm/day, the scale everything is scored on
                 acc[K][name].append(
@@ -322,8 +413,12 @@ def main(a):
                    "n_days": int(targ.shape[1]),
                    "epochs": a.epochs, "steps": a.steps, "tasks": a.tasks,
                    "k_train": a.k_train, "context_pool": a.context_pool,
+                   "context_period": a.context_period,
+                   "context_lag_days": a.context_lag_days,
                    "time_aligned": a.time_aligned, "geo": a.geo,
-                   "causal": a.causal, "median_nse": summary}, f, indent=2)
+                   "causal": a.causal, "no_pooled": a.no_pooled,
+                   "mask_mix": a.mask_mix,
+                   "median_nse": summary}, f, indent=2)
     print(f"\nwrote {outdir}", flush=True)
     print("  nn = nearest donor, cm = context mean, idw = inverse-distance "
           "weighting -- the baselines K>0 must beat.", flush=True)
@@ -334,7 +429,8 @@ if __name__ == "__main__":
     ap.add_argument("--nc", default=P.CAMELS_NC)
     ap.add_argument("--extent", choices=["PUB", "PUR", "temporal"],
                     default="PUB")
-    ap.add_argument("--protocol", choices=["spatial", "temporal"], default=None)
+    ap.add_argument("--protocol", default=None,
+                    choices=["spatial", "temporal"] + list(P.BENCHMARKS))
     ap.add_argument("--patch", type=int, default=16)
     ap.add_argument("--win", type=int, default=32)
     ap.add_argument("--depth", type=int, default=4)
@@ -346,11 +442,40 @@ if __name__ == "__main__":
                     action="store_false")
     ap.add_argument("--geo", action="store_true", default=True)
     ap.add_argument("--no-geo", dest="geo", action="store_false")
-    ap.add_argument("--causal", action="store_true")
+    ap.add_argument("--causal", action="store_true",
+                    help="time-mask the encoder AND drop the pooled path")
+    ap.add_argument("--mask-mix", action="store_true",
+                    help="MIXTURE PRETRAINING: draw the query's TRAINING mask "
+                         "from all four kinds instead of always whole_site. "
+                         "Evaluation stays the fixed PUB task. Under "
+                         "whole_site alone the time-aligned path can simply "
+                         "copy a neighbour's concurrent flow, so basin "
+                         "character never has to reach the summaries -- which "
+                         "is why the pooled path measures at ~0 in every "
+                         "whole_site run. This is the control for that.")
+    ap.add_argument("--no-pooled", action="store_true",
+                    help="drop the pooled path (connector + cross-attn) "
+                         "WITHOUT time-masking. The control that separates "
+                         "'the connector is harmful' from 'time masking "
+                         "helps', which --causal confounds.")
     ap.add_argument("--area-scale", action="store_true")
     ap.add_argument("--retrieval", choices=["geo", "similar", "random"],
                     default="geo")
     ap.add_argument("--context-pool", choices=["all", "train"], default="all")
+    ap.add_argument("--context-lag-days", type=float, default=16.0,
+                    help="historical mode: REPORTING LATENCY -- how stale the "
+                         "neighbours' records are. The context window keeps "
+                         "its full 512 d of history and is shifted back by "
+                         "this much, so lag and history length are "
+                         "independent. Rounded to whole patches; the floor is "
+                         "one patch (16 d) because `vis` is per-patch and a "
+                         "1-day lag would need a patch=1 model.")
+    ap.add_argument("--context-period", choices=["concurrent", "historical"],
+                    default="concurrent",
+                    help="concurrent: neighbours' flow on the SAME days "
+                         "being predicted (spatial interpolation / data "
+                         "assimilation). historical: neighbours' flow from "
+                         "an earlier window only (regionalisation).")
     ap.add_argument("--k-train", default="0,0,0,1,2,4,8,16")
     ap.add_argument("--k-eval", default="0,4")
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -364,4 +489,10 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.protocol is None:
         args.protocol = "temporal" if args.extent == "temporal" else "spatial"
+    if args.protocol in P.BENCHMARKS:
+        ok = P.BENCHMARKS[args.protocol]["extents"]
+        if args.extent not in ok:
+            raise SystemExit(
+                f"benchmark {args.protocol} defines extents {ok}, "
+                f"not {args.extent!r}")
     main(args)

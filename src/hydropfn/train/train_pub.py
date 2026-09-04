@@ -52,7 +52,9 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
                retrieval="similar", nn_rank=None, fixed_start=None,
                geo_rank=None, start_lo=0, start_hi=None,
-               ctx_start=None, latlon=None, self_da=0, mask_kind=None,
+               ctx_start=None, ctx_lag=None, ctx_Xp=None, ctx_valid_p=None,
+               ctx_doy=None, ctx_patch=None, latlon=None, self_da=0,
+               mask_kind=None,
                score_tail=0, attr_mask=0.0, self_ctx=0, area=None):
     """One task: query basin (streamflow hidden) + K context basins (visible).
 
@@ -93,17 +95,40 @@ def build_task(Xp, A, valid_p, doy, q_idx, ctx_pool, K, rng, win, obs_col,
     #                      time-aligned attention is meaningless here by
     #                      construction, since patch n of the query and patch n
     #                      of the context are different weeks.
+    # `ctx_lag` shifts the context window back a fixed number of PATCHES from
+    # the query's own window, preserving day-of-year so that patch n of the
+    # query and patch n of the context are the same season in different years.
+    # A fixed `ctx_start` instead pins one window for every query, which
+    # scrambles the seasonal pairing the time-aligned path depends on.
+    if ctx_lag is not None:
+        # ctx_lag is in DAYS; convert to an index in the offset context grid,
+        # whose own origin is (-ctx_lag) mod patch days into the record.
+        _p = ctx_patch or 1
+        ctx_start = (s * _p - ctx_lag - ((-ctx_lag) % _p)) // _p
+        if ctx_start < 0:
+            ctx_start = None
+
+    # Context may be read from a DIFFERENTLY PATCHIFIED array. The patch grid
+    # is anchored to the start of the record, so a context window offset by a
+    # non-multiple of `patch` days cannot be addressed in `Xp` at all -- that,
+    # not the architecture, is what made sub-patch lags look impossible.
+    # `value_proj` is Linear(patch, d) over the raw daily values, so a token
+    # bundles 16 days without averaging them and a 1-day lag is meaningful.
+    cXp = Xp if ctx_Xp is None else ctx_Xp
+    cvp = valid_p if ctx_valid_p is None else ctx_valid_p
+    cdoy = doy if ctx_doy is None else ctx_doy
+
     if ctx_start is None:
         ser = Xp[sites][:, sl]
         val = valid_p[sites][:, sl]
         dd = np.tile(doy[sl], (S, 1))
     else:
         csl = slice(ctx_start, ctx_start + win)
-        ser = np.concatenate([Xp[sites[:1]][:, sl], Xp[sites[1:]][:, csl]], 0)
+        ser = np.concatenate([Xp[sites[:1]][:, sl], cXp[sites[1:]][:, csl]], 0)
         val = np.concatenate([valid_p[sites[:1]][:, sl],
-                              valid_p[sites[1:]][:, csl]], 0)
+                              cvp[sites[1:]][:, csl]], 0)
         dd = np.concatenate([np.tile(doy[sl], (1, 1)),
-                             np.tile(doy[csl], (S - 1, 1))], 0)
+                             np.tile(cdoy[csl], (S - 1, 1))], 0)
 
     vis = np.ones((S, win, V), np.float32)
     if mask_kind is not None:

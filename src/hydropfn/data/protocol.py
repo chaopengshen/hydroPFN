@@ -64,22 +64,87 @@ PUB_IDS = list(range(1, 11))
 WARMUP = 365          # model.warmup
 RHO = 365             # model.rho -- training sequence length
 
-PERIODS = {
-    # name        train start   train end     test start    test end
-    "spatial":  ("1980-10-01", "1999-09-30", "1995-10-01", "1999-09-30"),
-    "temporal": ("1980-10-01", "1995-09-30", "1995-10-01", "2010-09-30"),
+# ---------------------------------------------------------------- benchmarks
+#
+# Each entry is a NAMED published protocol. The name is carried into every
+# run.json and every CSV row, because the single most expensive mistake in
+# this project's history was putting two protocols in one table -- so a bare
+# NSE with no protocol beside it is not a result here, it is a liability.
+#
+# `basins`  531 = the Newman/Addor quality-filtered subset; 671 = all of CAMELS
+# `extents` which holdouts the benchmark defines
+BENCHMARKS = {
+    "peijun_li": {
+        "label": "Peijun Li Ensemble",
+        "basins": 531, "extents": ["PUB", "PUR"],
+        "train": ("1980-10-01", "1999-09-30"),
+        "test": ("1995-10-01", "1999-09-30"),
+        "note": "spatial generalization; train and test periods overlap, "
+                "which is not a leak because the basins are disjoint",
+    },
+    "feng2023": {
+        "label": "Dapeng Feng 2023",
+        "basins": 531, "extents": ["PUB", "PUR"],
+        "train": ("1989-10-01", "1999-09-30"),
+        "test": ("1989-10-01", "1999-09-30"),
+        "note": "trained and tested in the SAME period, different basins",
+    },
+    "leo10_531": {
+        "label": "10 years 531 Leo",
+        "basins": 531, "extents": ["temporal"],
+        "train": ("1999-10-01", "2008-09-30"),
+        "test": ("1989-10-01", "1999-09-30"),
+        "note": "the test period PRECEDES the training period -- backwards "
+                "in time, and deliberately so",
+    },
+    "leo15_671": {
+        "label": "15 years 671 Leo",
+        "basins": 671, "extents": ["temporal"],
+        "train": ("1980-10-01", "1995-09-30"),
+        "test": ("1995-10-01", "2010-09-30"),
+        "note": "all 671 CAMELS basins, not the 531 subset",
+    },
+    # The 531-basin twin of leo15_671, already run before the registry
+    # existed. Kept so those results stay addressable by name.
+    "leo15_531": {
+        "label": "15 years 531 (legacy temporal)",
+        "basins": 531, "extents": ["temporal"],
+        "train": ("1980-10-01", "1995-09-30"),
+        "test": ("1995-10-01", "2010-09-30"),
+        "note": "same periods as leo15_671 on the 531 subset",
+    },
 }
 
+# Legacy names, kept so already-written run.json files stay readable.
+PERIODS = {
+    "spatial": (*BENCHMARKS["peijun_li"]["train"],
+                *BENCHMARKS["peijun_li"]["test"]),
+    "temporal": (*BENCHMARKS["leo15_531"]["train"],
+                 *BENCHMARKS["leo15_531"]["test"]),
+}
+for _k, _b in BENCHMARKS.items():
+    PERIODS[_k] = (*_b["train"], *_b["test"])
 
-def load_531(d):
-    """Restrict a `load_camels` dict to the 531-basin subset, in file order.
+
+def load_subset(d, n_basins=531):
+    """Restrict a `load_camels` dict to 531 or 671 basins, in file order.
 
     Returns (subset_dict, gage_table). The gage table carries `PUB_ID` and
     `huc` aligned to the subset rows, so the split functions never have to
     re-join anything.
+
+    For 671 the order is the netCDF's own station order; `gages_list_with_pub.csv`
+    covers all 671, so both PUB and PUR folds are defined there too:
+        671 PUB [59, 68, 55, 61, 79, 75, 61, 74, 73, 66]
+        671 PUR [102, 109, 109, 79, 87, 94, 91]
     """
-    with open(SUBSET_531) as f:
-        want = [int(x) for x in json.load(f)]
+    if n_basins == 671:
+        want = [int(s) for s in d["site_id"]]
+    elif n_basins == 531:
+        with open(SUBSET_531) as f:
+            want = [int(x) for x in json.load(f)]
+    else:
+        raise ValueError(f"n_basins must be 531 or 671, got {n_basins}")
 
     sid_int = np.array([int(s) for s in d["site_id"]])
     pos = {v: i for i, v in enumerate(sid_int)}
@@ -101,8 +166,14 @@ def load_531(d):
     g["gage_int"] = g["gage"].astype(int)
     g = g.set_index("gage_int").reindex(want)
     if g["PUB_ID"].isna().any():
-        raise ValueError("gages_list_with_pub.csv does not cover all 531 basins")
+        raise ValueError(f"gages_list_with_pub.csv does not cover all "
+                         f"{n_basins} basins")
     return out, g.reset_index()
+
+
+def load_531(d):
+    """Backward-compatible alias for `load_subset(d, 531)`."""
+    return load_subset(d, 531)
 
 
 def folds(extent, gage_table):
@@ -146,7 +217,11 @@ def windows(time, protocol):
     the old baseline excluded its 120-day warmup from the loss but scored it
     anyway, with a cold hidden state, under a docstring claiming otherwise.
     """
-    tr0, tr1, te0, te1 = PERIODS[protocol]
+    if protocol in BENCHMARKS:
+        b = BENCHMARKS[protocol]
+        tr0, tr1, te0, te1 = (*b["train"], *b["test"])
+    else:
+        tr0, tr1, te0, te1 = PERIODS[protocol]
     i_tr0, i_tr1 = date_index(time, tr0), date_index(time, tr1)
     i_te0, i_te1 = date_index(time, te0), date_index(time, te1)
     if i_te0 - WARMUP < 0:
@@ -210,8 +285,12 @@ def describe(extent, protocol, gage_table, time):
     w = windows(time, protocol)
     fs = folds(extent, gage_table)
     n_score = w["score"].stop - w["score"].start
+    b = BENCHMARKS.get(protocol)
     lines = [
-        f"protocol {protocol} / extent {extent}",
+        f"benchmark {protocol}"
+        + (f"  [{b['label']}, {b['basins']} basins]" if b else "")
+        + f" / extent {extent}",
+    ] + ([f"  note         : {b['note']}"] if b else []) + [
         f"  train window : {w['labels']['train'][0]} .. "
         f"{w['labels']['train'][1]}  ({w['train'].stop - w['train'].start} d)",
         f"  scored       : {w['labels']['test'][0]} .. "

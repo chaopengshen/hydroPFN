@@ -32,9 +32,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from hydropfn.data import protocol as P                        # noqa: E402
 from hydropfn.paths import LOGS, ROOT                          # noqa: E402
 
-FIELDS = ["model", "extent", "protocol", "epochs", "seed", "K", "series",
+FIELDS = ["benchmark", "benchmark_label", "basins", "train_period",
+          "test_period", "arm", "model", "extent", "protocol", "epochs",
+          "seed", "K", "context_period", "series",
           "nse", "kge", "corr", "bias_rel", "rmse", "fhv", "flv",
           "n_basins", "n_days", "tag"]
 
@@ -63,10 +66,18 @@ def main(a):
     for run in sorted(Path(a.logs).glob("*/run.json")):
         d = run.parent
         r = json.load(open(run))
+        bm = P.BENCHMARKS.get(r["protocol"], {})
         base = {"model": r["model"], "extent": r["extent"],
                 "protocol": r["protocol"], "epochs": r["epochs"],
                 "seed": r["seed"], "n_basins": r["n_basins"],
-                "n_days": r["n_days"], "tag": d.name}
+                "n_days": r["n_days"], "tag": d.name,
+                "benchmark": r["protocol"],
+                "benchmark_label": bm.get("label", r["protocol"]),
+                "basins": bm.get("basins", r["n_basins"]),
+                "train_period": "..".join(bm["train"]) if bm else "",
+                "test_period": "..".join(bm["test"]) if bm else "",
+                "context_period": r.get("context_period", ""),
+                "arm": d.name.split("_")[0]}
         med = r["median_nse"]
 
         if not isinstance(med, dict):                    # LSTM / unit A
