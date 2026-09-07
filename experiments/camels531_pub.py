@@ -267,6 +267,10 @@ def main(a):
                           d_ffd=a.d_ffd, k_summary=a.k_summary)
         net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
                        geo=a.geo, causal=a.causal).to(DEVICE)
+        if a.init_ckpt:
+            net.load_state_dict(torch.load(a.init_ckpt,
+                                           map_location=DEVICE))
+            print(f"    warm-started from {a.init_ckpt}", flush=True)
         if kf == 0:
             print(f"    PUBModel "
                   f"{sum(t.numel() for t in net.parameters()) / 1e6:.1f}M "
@@ -494,6 +498,10 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-folds", type=int, default=0)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--init-ckpt", default=None,
+                    help="warm-start each fold from this state_dict -- the "
+                         "pretrain->finetune recipe (e.g. generalist "
+                         "checkpoint, then --k-train 0 to specialize)")
     ap.add_argument("--save-ckpt", action="store_true",
                     help="save each fold's state_dict beside its predictions "
                          "(logs/camels531/<tag>/fold<k>.pt) for eval-only "
