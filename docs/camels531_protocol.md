@@ -263,6 +263,20 @@ nearest observation ~16 days away on average. Diagnosed by fingerprint, not
 inspection. The remaining gap to DI-LSTM (~0.86 at lead 1) is real,
 unexplained, and the suite's main open problem.
 
+**The gauged-forward gap is architecture, not the training mixture
+(2026-09-08, `pub531_temporal_k0spec_e800`).** A from-scratch K=0-only
+specialist of our own architecture scores **0.639** on gauged temporal —
+identical to the generalist's 0.640. Specializing buys zero, so there is no
+mixture tax and nothing for a finetune to recover; the one-model-many-tasks
+property holds in the strong sense. The 0.05 gap to the LSTM (0.687) is
+architectural — same data, same globally-standardized squared-error loss
+family, same budget; the LSTM's daily recurrence with 365-day spin-up state
+is the remaining difference (candidates within it: 16-day patch granularity
+and windowed scoring vs persistent state). dHBV1.1p's further margin to
+0.743 is partly OBJECTIVE — dmg trains it with per-basin NSE loss, i.e. the
+reported metric — plus physics priors. Replication run with `--save-ckpt`
+(`pub531_temporal_fwd_ck`): K=0 0.642 / K=4 0.766, fold checkpoint saved.
+
 **Baseline provenance.** LSTM temporal: 3-seed e100 median **0.687**
 (0.676/0.688/0.699) — confirms the e50 single-seed 0.692 was converged, so
 the e50 PUB values (0.666/0.545) are probably sound but unrefreshed.
