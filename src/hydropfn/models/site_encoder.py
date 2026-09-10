@@ -69,7 +69,7 @@ class SiteEncoder(nn.Module):
     def __init__(self, n_attr: int, n_vars: int, patch: int = 16,
                  d: int = D_MODEL, depth: int = 4, heads: int = 4,
                  k_summary: int = 3, dropout: float = 0.1,
-                 n_dem: int = 0,
+                 n_dem: int = 0, dem_bottleneck: int = 0,
                  d_ffd: int = 512):
         """`d_ffd` defaults to 512, not the usual 4*d = 1024, so the trunk has
         the SAME shape as StefaLand's `encoder.transformer_encoder` and its
@@ -104,7 +104,18 @@ class SiteEncoder(nn.Module):
         # instead of a zero that means "average terrain". 3DEP is CONUS-only
         # and the global tier is 30-90 m, so missing/degraded DEM is the
         # normal case, not an edge case.
-        self.dem_proj = nn.Linear(n_dem, d) if n_dem else None
+        # dem_bottleneck > 0: a learned squeeze (n_dem -> 64 -> b -> d)
+        # instead of the direct linear. NOTE this is a WEAKER constraint
+        # than PCA at the same width -- b learned floats can still encode
+        # basin identity if the loss wants one; the comparison against a
+        # fixed task-blind PCA basis of the same width is the point.
+        if n_dem and dem_bottleneck:
+            self.dem_proj = nn.Sequential(
+                nn.Linear(n_dem, 64), nn.SiLU(),
+                nn.Linear(64, dem_bottleneck), nn.SiLU(),
+                nn.Linear(dem_bottleneck, d))
+        else:
+            self.dem_proj = nn.Linear(n_dem, d) if n_dem else None
         self.dem_absent = nn.Parameter(torch.zeros(d))
         self.value_proj = nn.Linear(patch, d)
         self.var_emb = nn.Embedding(n_vars, d)

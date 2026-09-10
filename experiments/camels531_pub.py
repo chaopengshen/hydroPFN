@@ -75,7 +75,8 @@ def tile_starts(span_days, patch, win):
 
 def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                    geo_rank, nn_rank, latlon, area, p0, starts, span_days,
-                   obs_col, ctx_off=None, recent_obs=0):
+                   obs_col, ctx_off=None, recent_obs=0, dem=None,
+                   eval_attr_mask=0.0):
     """Predicted QObs for `te_idx` over the eval span, indexed by DAY.
 
     Returns (n_basins, span_days) on the STANDARDISED scale, plus the donor
@@ -118,7 +119,8 @@ def predict_basins(net, Xp, A_s, valid_p, doy, te_idx, ctx_pool, K, a,
                     area=area if a.area_scale else None,
                     ctx_start=(p0 + st - ctx_off) if ctx_off else None,
                     self_ctx=(0 if a.self_da else recent_obs),
-                    self_da=(recent_obs if a.self_da else 0))
+                    self_da=(recent_obs if a.self_da else 0),
+                    dem=dem, dem_p=1.0, attr_mask=eval_attr_mask)
                 tasks.append(t)
                 metas.append((int(q), sites, sl))
             b = collate(tasks)
@@ -216,10 +218,35 @@ def main(a):
               f"protocol result", flush=True)
 
     k_eval = [int(x) for x in a.k_eval.split(",")]
-    acc = {K: {"p": [], "nn": [], "cm": [], "idw": []} for K in k_eval}
+    # eval arms: (K, attr_mask_at_eval, key). The sweep adds a statics-
+    # withheld twin of every K -- the global-case readout, where DEM (if
+    # present) must carry whatever the statics were carrying.
+    eval_arms = [(K, 0.0, str(K)) for K in k_eval]
+    if a.eval_attr_sweep:
+        eval_arms += [(K, 1.0, f"{K}na") for K in k_eval]
+    acc = {key: {"p": [], "nn": [], "cm": [], "idw": []}
+           for _, _, key in eval_arms}
     targs, fold_of, gages = [], [], []
 
     tag = a.tag or f"pub_{a.extent}_{a.protocol}_s{a.seed}"
+
+    demf = None
+    if a.dem_npz:
+        _z = np.load(a.dem_npz, allow_pickle=True)
+        _ids = {str(x): i for i, x in
+                enumerate(np.asarray(_z["site_id"]).astype(str))}
+        _F = np.asarray(_z["feats"], np.float64)
+        _ok = np.asarray(_z["ok"]).astype(bool) if "ok" in _z else             np.ones(len(_F), bool)
+        demf = np.full((len(sub["site_id"]), _F.shape[1]), np.nan,
+                       np.float64)
+        _hit = 0
+        for _i, _s in enumerate(np.asarray(sub["site_id"]).astype(str)):
+            _j = _ids.get(_s)
+            if _j is not None and _ok[_j]:
+                demf[_i] = _F[_j]
+                _hit += 1
+        print(f"  DEM features: {_hit}/{len(demf)} sites matched, "
+              f"{_F.shape[1]} dims, dem_k={a.dem_k}", flush=True)
     for kf, te_idx in enumerate(folds):
         if a.extent == "temporal":
             tr_idx = np.arange(len(gage))
@@ -263,8 +290,26 @@ def main(a):
               f"{np.median(d_tr):.2f} deg; nearest ANY: median "
               f"{np.median(d_any):.2f} deg", flush=True)
 
+        dem_fold = None
+        if demf is not None:
+            # z-score and (optionally) PCA on the TRAINING basins only --
+            # the basis may never see a held-out basin's terrain
+            _tr_ok = tr_idx[np.isfinite(demf[tr_idx]).all(1)]
+            _mu = demf[_tr_ok].mean(0)
+            _sd = demf[_tr_ok].std(0) + 1e-6
+            dem_fold = (demf - _mu) / _sd
+            if a.dem_k:
+                _u, _sv, _vt = np.linalg.svd(dem_fold[_tr_ok],
+                                             full_matrices=False)
+                dem_fold = dem_fold @ _vt[:a.dem_k].T
+                dem_fold /= dem_fold[_tr_ok].std(0) + 1e-6
+            dem_fold = dem_fold.astype(np.float32)
+
         enc = SiteEncoder(A_s.shape[1], Xp.shape[2], a.patch, depth=a.depth,
-                          d_ffd=a.d_ffd, k_summary=a.k_summary)
+                          d_ffd=a.d_ffd, k_summary=a.k_summary,
+                          n_dem=(dem_fold.shape[1] if dem_fold is not None
+                                 else 0),
+                          dem_bottleneck=a.dem_mlp_bottleneck)
         net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
                        geo=a.geo, causal=a.causal).to(DEVICE)
         if a.init_ckpt:
@@ -316,6 +361,8 @@ def main(a):
                         area=area_km if a.area_scale else None,
                         ctx_start=("align" if a.context_period
                                    == "train" else None),
+                        dem=dem_fold, dem_p=a.dem_p,
+                        attr_mask=a.attr_mask_p,
                         self_ctx=step_self,
                         # same draw-share logic as self-ctx: the scored
                         # position is the window's LAST, so a uniform 1..win/2
@@ -372,18 +419,18 @@ def main(a):
         fold_of.append(np.full(len(te_idx), kf))
         gages.append(gage["gage"].to_numpy()[te_idx])
 
-        for K in k_eval:
+        for K, e_am, akey in eval_arms:
             got = predict_basins(net, Xp, A_s, valid_p, doy, te_idx, tr_idx,
                                  K, a, geo_eval, nn_rank, ll, area_km,
                                  p0, starts, span, obs,
                 ctx_off=(137 if a.context_period == "train" else None),
-                recent_obs=a.recent_obs)
+                recent_obs=a.recent_obs, dem=dem_fold, eval_attr_mask=e_am)
             for name, arr in got.items():
                 # standardised -> mm/day, the scale everything is scored on
-                acc[K][name].append(
+                acc[akey][name].append(
                     (arr[:, keep] * sd[obs] + mu[obs]).astype(np.float32))
-            m = P.nse_table(acc[K]["p"][-1], targs[-1])
-            print(f"    fold {kf} K={K:2d}  median NSE "
+            m = P.nse_table(acc[akey]["p"][-1], targs[-1])
+            print(f"    fold {kf} K={akey:>3s}  median NSE "
                   f"{np.nanmedian(m.nse):+.4f}", flush=True)
 
     targ = np.concatenate(targs, 0)
@@ -395,18 +442,18 @@ def main(a):
 
     summary = {}
     print("\n=== PUBModel, CAMELS-531 ===", flush=True)
-    for K in k_eval:
+    for K, e_am, akey in eval_arms:
         row = {}
         for name in ("p", "nn", "cm", "idw"):
-            if not acc[K][name]:
+            if not acc[akey][name]:
                 continue
-            arr = np.concatenate(acc[K][name], 0)
+            arr = np.concatenate(acc[akey][name], 0)
             row[name] = float(np.nanmedian(P.nse_table(arr, targ).nse))
             if name == "p":
-                np.save(outdir / f"pred_K{K}.npy", arr)
-                (outdir / f"K{K}").mkdir(exist_ok=True)
-                P.nse_table(arr, targ).dump_metrics(str(outdir / f"K{K}"))
-        summary[f"K={K}"] = row
+                np.save(outdir / f"pred_K{akey}.npy", arr)
+                (outdir / f"K{akey}").mkdir(exist_ok=True)
+                P.nse_table(arr, targ).dump_metrics(str(outdir / f"K{akey}"))
+        summary[f"K={akey}"] = row
         extra = "".join(f"  {n} {row[n]:+.4f}"
                         for n in ("nn", "cm", "idw") if n in row)
         print(f"  K={K:2d}  median NSE {row['p']:+.4f}{extra}", flush=True)
@@ -498,6 +545,30 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-folds", type=int, default=0)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--dem-npz", default=None,
+                    help="per-site DEM feature npz (site_id + feats); "
+                         "enables the DEM token on every site")
+    ap.add_argument("--dem-k", type=int, default=0,
+                    help="compress DEM features to k PCs, fit on each "
+                         "fold's TRAINING basins (0 = raw dims). The "
+                         "fingerprint counting argument: 768 dims vs ~550 "
+                         "training basins is >1 dim/basin -- identification "
+                         "capacity, not description")
+    ap.add_argument("--dem-mlp-bottleneck", type=int, default=0,
+                    help="learned squeeze n_dem->64->b->d instead of the "
+                         "direct projection; use with --dem-k 0. Weaker "
+                         "constraint than PCA at the same width -- the "
+                         "fingerprint re-emergence probe")
+    ap.add_argument("--dem-p", type=float, default=0.9,
+                    help="TRAIN: per-site probability the DEM token is "
+                         "visible (modality dropout)")
+    ap.add_argument("--attr-mask-p", type=float, default=0.0,
+                    help="TRAIN: per-attribute masking rate on the QUERY's "
+                         "statics -- forces draws where DEM must carry the "
+                         "load")
+    ap.add_argument("--eval-attr-sweep", action="store_true",
+                    help="EVAL: score each K twice, statics visible and "
+                         "fully withheld -- the global-case readout")
     ap.add_argument("--init-ckpt", default=None,
                     help="warm-start each fold from this state_dict -- the "
                          "pretrain->finetune recipe (e.g. generalist "
