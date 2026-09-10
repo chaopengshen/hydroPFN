@@ -385,6 +385,50 @@ redundancy**: with the forward probe (+0.002), the new-terrain probe
 question is answered three ways; the `pub531_ckpt3_e800` fold checkpoints
 (0.727/0.75 heldout-fold NSE) are saved if anyone wants the fourth.
 
+**In-model retest with compression (2026-09-10, commit `1823d4a`).** The
+question CS posed: do 768 pooled diffusion dims overfit (>1 dim per
+training basin, i.e. identification capacity), and would a hard squeeze
+before the time-series arm help? Five arms, PUB spatial folds 0–2, e800,
+seed 0, all trained with 50% per-attribute statics masking so there are
+draws where DEM must stand in for the table; each scored with statics
+visible and fully withheld (the global-case readout). Median NSE, pooled
+over the 147 held-out basins:
+
+| arm | DEM input | statics visible | statics withheld |
+|---|---|---|---|
+| A control | none | **0.709** | 0.639 |
+| B raw | 768 dims, linear | 0.654 | 0.623 |
+| C PCA-32 | per-fold basis, task-blind | 0.666 | **0.644** |
+| D PCA-8 | per-fold basis, task-blind | 0.667 | 0.642 |
+| E learned MLP→8 | 768→64→8, trained | 0.634 | 0.596 |
+
+1. **Compression does what the counting argument predicted.** With statics
+   withheld, raw features cost 0.016 against the control; PCA to 32 or 8
+   removes that cost (0.644 / 0.642 vs 0.639). The overfitting was real.
+2. **But compressed DEM still adds nothing.** +0.003 to +0.005 in the one
+   regime it was supposed to win is noise at three folds and one seed.
+3. **A learned bottleneck is worse than no compression at all** (0.596
+   withheld, and unstable: fold 2 at 0.567). Eight trainable floats can
+   still encode which basin this is, and they are pushed toward exactly
+   that by the loss. A fixed, task-blind basis is what constrains the
+   pathway; width alone does not. If DEM is fed to this arm again, feed it
+   through PCA.
+4. **With statics visible, every DEM arm hurts**: −0.042 even for PCA,
+   and the loss appears in all three folds. DEM in the input is not free,
+   compressed or not.
+
+The DEM-for-streamflow question is closed on CAMELS: the raw arm's damage
+was capacity, compression fixes the damage, and there is no gain
+underneath it.
+
+**Side result worth more than the DEM result: statics masking lifts the
+forward arm.** Same folds, same budget, K=0 fold means — mode-A training
+0.675, mode-A with 50% statics masking **0.701** (+0.026, positive in all
+three folds), mode-B training 0.711. This replicates the 671-era
+attribute-dropout gain (+0.032) on the verified protocol. Both statics
+masking and mode-B draws are regularizers for the forward arm; they have
+not been combined yet.
+
 Consequence: the DEM arm's defensible pitches remain **geology as a
 target** (lithology 0.59→0.64, age 0.37→0.44 — no curated table exists) and
 the future 2D-field arm — NOT statics imputation on any landscape with a
