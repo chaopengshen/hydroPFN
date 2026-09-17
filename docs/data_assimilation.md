@@ -21,10 +21,14 @@ whatever is visible.
 
 | what goes in the task | result | best alternative |
 |---|---|---|
-| nothing, ungauged basin | 0.682 (0.707 mode-B-trained) | LSTM+dHBV1.1p 0.700 |
-| ~4 nearby gauges, ungauged basin | **0.751** | IDW 0.645, StefaLand 0.721 |
-| own gauge, 1–16 days stale | 0.707 | LSTM 0.687, dHBV1.1p 0.743 |
-| own gauge + nearby gauges | **0.804** | dHBV1.1p 0.743 |
+| nothing, ungauged basin (PUB) | 0.682 (0.707 mode-B-trained) | LSTM+dHBV1.1p 0.700 |
+| ~4 nearby gauges, ungauged basin (PUB) | **0.751** | IDW 0.645, StefaLand 0.721 |
+| own gauge, 1–16 days stale, gauged basin (temporal) | 0.707 | LSTM 0.687, dHBV1.1p 0.743 |
+| own gauge + nearby gauges, gauged basin (temporal) | **0.804** | dHBV1.1p 0.743 |
+
+PUB = the basin was held out of training. Temporal = every basin was in
+training for 1980–95 and is scored on 1995–2010. **The own-gauge stream has
+only been tested on the temporal split**; see open question 6.
 
 Neither LSTM nor dHBV can take these observation streams at inference. Where
 any observation stream exists, the model wins without finetuning. The one
@@ -136,8 +140,8 @@ Limits that are about the code, not the architecture:
 
 ### How far away a neighbour still helps
 
-PUB spatial, mode A, split by distance to the nearest other gauge (K=4 vs
-inverse-distance weighting of the same neighbours):
+PUB spatial, mode A, split by distance to the nearest other gauge. IDW here
+interpolates the 8 nearest gauges' concurrent flow, with no model:
 
 | nearest gauge | basins | ours, K=0 | ours, K=4 | IDW | margin over IDW |
 |---|---|---|---|---|---|
@@ -205,6 +209,9 @@ may start before the scored period and read pre-period observations, as an
 operational system would.
 
 ### Results
+
+Temporal split: the station's 1980–95 record was in training, and scoring is
+1995–2010. The LSTM, dHBV1.1p and DI-LSTM references are gauged as well.
 
 | | NSE |
 |---|---|
@@ -320,3 +327,6 @@ order.
    ceiling of the information or of the training draw.
 5. **Statics masking plus mode-B draws together.** Each lifts the no-context
    arm by about 0.025 on its own; they have not been combined.
+6. **Own-gauge data on an ungauged basin** (PUB extent with `--recent-obs`):
+   a station that was never in training but has recent observations, e.g. a
+   newly installed gauge. Not run. An LSTM cannot use this without retraining.
