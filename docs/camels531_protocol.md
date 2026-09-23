@@ -67,6 +67,31 @@ same 531 basins, and neither is in subset order. Every run in this repository
 writes `gage.npy` and `fold.npy` beside its predictions for exactly this
 reason.
 
+**Basin alignment checked (2026-09-22, `scripts/check_basin_alignment.py`).**
+A port of ADW's `check_basin_alignment.py`, prompted by their finding that
+arrays from a sorted subset joined to a CSV from an unsorted basin list
+mislabelled 439 of 531 basins. The test is physical and comparative: mean
+precipitation per basin must track that basin's `p_mean`, and the failure
+shows up as some *other* ordering scoring better than the stored one. Ours
+passes at all three places it could drift:
+
+| where | stored | sorted-ID | reading |
+|---|---|---|---|
+| raw netCDF, 671 basins | 0.997 | 0.997 | ids already sorted, nothing to distinguish |
+| after `load_531()` | **0.997** | 0.253 | subset is NOT sorted (4 ids out of place), so this is a real test: stored order is right and sorting would destroy it |
+| `frac_snow` vs sub-zero precipitation | 0.994 | 0.362 | second, independent signal, same verdict |
+
+The side file (`gages_list_with_pub.csv`, the one thing assembled from a basin
+list rather than from the arrays) was checked separately: its rows correspond
+to subset rows 531/531 by gage id, its `LAT`/`LONG` match the netCDF
+coordinates to 0.0000°, and the PUR folds it defines are spatially coherent
+(longitude spread 4.33° vs 15.99° shuffled) while the PUB folds are not, which
+is correct — PUB is random by design.
+
+We are safe largely by construction: attributes and forcings are variables on
+the same basin dimension of one netCDF, and every join in `protocol.py` is by
+gage id (`set_index("gage_int").reindex(want)`), never by position.
+
 ---
 
 ## What changed, item by item
