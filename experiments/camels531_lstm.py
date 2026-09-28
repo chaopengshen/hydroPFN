@@ -46,6 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hydropfn.data import protocol as P                       # noqa: E402
 from hydropfn.data.forcing import load_camels                 # noqa: E402
 from hydropfn.paths import LOGS                               # noqa: E402
+from hydropfn.train.objectives import (                       # noqa: E402
+    basin_normalized_mse, training_variances)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -67,7 +69,7 @@ class RegionalLSTM(nn.Module):
         return self.head(self.drop(h)).squeeze(-1)
 
 
-def fit_fold(forc, att, q, tr_idx, win, a, rng):
+def fit_fold(forc, att, q, tr_idx, win, a, rng, q_variance=None):
     """Train one LSTM on `tr_idx` basins over the training window.
 
     Sequences are `warmup + rho` = 730 days long and the loss covers only the
@@ -101,19 +103,24 @@ def fit_fold(forc, att, q, tr_idx, win, a, rng):
             y = torch.tensor(q[b, s:s + seq], device=DEVICE)
             aa = torch.tensor(att[b], device=DEVICE)
             p = net(x, aa)
-            # Spin-up carries no gradient, exactly as it carries no score.
+            # Spin-up has no direct loss; its recurrent state still carries
+            # gradients from the scored days, as in the reference sampler.
             yv, pv = y[:, a.warmup_train:], p[:, a.warmup_train:]
             m = torch.isfinite(yv).float()
-            loss = torch.sqrt(
-                (((pv - torch.nan_to_num(yv)) ** 2) * m).sum()
-                / m.sum().clamp(min=1.0))
+            if a.loss == "nse":
+                variance = torch.tensor(q_variance[b], device=DEVICE)
+                loss = basin_normalized_mse(pv, yv, m, variance)
+            else:
+                loss = torch.sqrt(
+                    (((pv - torch.nan_to_num(yv)) ** 2) * m).sum()
+                    / m.sum().clamp(min=1.0))
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
             tot += loss.item()
         if (ep + 1) % 10 == 0 or ep == 0:
-            print(f"    epoch {ep + 1}/{a.epochs}  RMSE {tot / steps:.4f}"
+            print(f"    epoch {ep + 1}/{a.epochs}  {a.loss} {tot / steps:.4f}"
                   f"  [{(time.time() - t0) / 60:.1f} min]", flush=True)
     return net
 
@@ -189,7 +196,19 @@ def main(a):
         qsd = float(np.nanstd(q_raw[tr_idx][:, tw]) + 1e-6)
         qn = ((q_raw - qmu) / qsd).astype(np.float32)
 
-        net = fit_fold(forc, att, qn, tr_idx, win, a, rng)
+        q_variance = (training_variances(q_raw, tr_idx, tw, qsd, a.nse_min_std)
+                      if a.loss == "nse" else None)
+        net = fit_fold(forc, att, qn, tr_idx, win, a, rng, q_variance)
+        if a.save_ckpt:
+            tag = a.tag or f"lstm_{a.extent}_{a.protocol}_s{a.seed}"
+            ck = LOGS / "camels531" / tag
+            ck.mkdir(parents=True, exist_ok=True)
+            torch.save(net.state_dict(), ck / f"fold{k}.pt")
+            np.savez(ck / f"fold{k}_normalization.npz", mean=mu, std=sd,
+                     attr_mean=am, attr_std=asd, q_mean=qmu, q_std=qsd,
+                     train_indices=tr_idx,
+                     train_gage=gage["gage"].to_numpy()[tr_idx].astype(str),
+                     q_variance=(q_variance if q_variance is not None else np.array([])))
         n_par = sum(t.numel() for t in net.parameters())
         p = predict_fold(net, forc, att, te_idx, win) * qsd + qmu
 
@@ -226,7 +245,9 @@ def main(a):
                    "n_days": int(pred.shape[1]),
                    "epochs": a.epochs, "steps": a.steps,
                    "hidden": a.hidden, "dropout": a.dropout,
-                   "params": int(n_par)}, f, indent=2)
+                   "params": int(n_par), "loss": a.loss,
+                   "nse_min_std_mm_day": a.nse_min_std,
+                   "args": vars(a)}, f, indent=2)
     print(f"\nwrote {outdir}", flush=True)
 
 
@@ -252,6 +273,10 @@ if __name__ == "__main__":
     ap.add_argument("--max-folds", type=int, default=0,
                     help="smoke test: run only the first N folds")
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--loss", choices=["rmse", "nse"], default="rmse")
+    ap.add_argument("--nse-min-std", type=float, default=0.1,
+                    help="training Q std floor in raw mm/day for NSE loss")
+    ap.add_argument("--save-ckpt", action="store_true")
     args = ap.parse_args()
     if args.protocol is None:
         args.protocol = "temporal" if args.extent == "temporal" else "spatial"

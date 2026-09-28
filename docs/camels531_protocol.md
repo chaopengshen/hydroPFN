@@ -507,3 +507,309 @@ model degrades gracefully to its forward arm (K=4 0.477 ≈ K=0 0.465 vs IDW
 where it is informative and ignored where it is not. It is also the honest
 deflation of the aggregate +0.106-over-IDW headline — most of that margin is
 earned in the sparse half of the network.
+
+---
+
+## Recovery pilots completed 2026-09-23
+
+These are new **seed-0 pilots**, not replacements for the earlier benchmark
+claims. Temporal experiments use the temporal dates above, all 531 basins,
+5479 scored days, raw mm/day and the vendored dmg metric. Saved gauge IDs
+and target arrays were checked before paired comparisons. Training-only basin
+variances, with a 0.1 mm/day standard-deviation floor, define the new normalized
+MSE loss. This approximates mean per-basin NSE, not median NSE; it is not a
+verified line-for-line reproduction of dHBV's `NseBatchLoss`.
+
+### Objective and forward diagnostics
+
+| model | objective / ablation | temporal median NSE |
+|---|---|---:|
+| original PFN, K=0 | global MSE | 0.640079 |
+| original PFN, K=0 | basin-normalized MSE | 0.635120 |
+| original PFN, K=0 | global MSE, pooled path disabled | 0.640281 |
+| regional LSTM | global RMSE | 0.682272 |
+| regional LSTM | basin-normalized MSE | 0.691068 |
+
+Neither changing the objective nor removing the pooled path closes the PFN
+forward gap in this pilot. The fresh LSTM RMSE control does not reproduce the
+historical seed-0 value exactly; the paired target/protocol checks pass, but
+the historical runtime is incompletely recorded. Use the fresh control for
+this objective comparison. Diagnostics: `logs/recovery_setup/stage1_diagnostics/`.
+
+### Recurrent observation interface and paired training
+
+These models use the LSTM observation interface in
+`experiments/camels531_daily_di.py`; they are **not the original PFN**. The same
+frozen mixed/paired checkpoint is evaluated under each information condition.
+Daily means yesterday's Q is available; none means no observed Q is supplied.
+
+| temporal model | epochs | no observed Q | daily Q | weekly Q |
+|---|---:|---:|---:|---:|
+| forward specialist | 100 | 0.692403 | — | — |
+| daily specialist | 100 | — | 0.830728 | — |
+| original mixed sampler | 100 | 0.704258 | 0.800624 | 0.743795 |
+| paired daily + mixed | 50 | 0.714143 | 0.832320 | 0.753548 |
+| paired daily + mixed | 100 | 0.709465 | 0.816062 | 0.744264 |
+| paired daily + daily control | 100 | — | 0.826290 | — |
+
+Each paired update averages two losses on the same sampled basin/window,
+with independent dropout, one gradient clip and one optimizer step. Paired
+50 epochs has 13,300 updates and 26,600 window views: the original specialist's
+total view count, with half its optimizer updates. Paired 100 epochs and the
+two-pass daily control each have 26,600 updates and 53,200 views, on GPU 2.
+The paired 50-epoch model and original daily specialist ran on GPU 4.
+Matching views is a compute proxy, not identical GPU time or optimizer history.
+
+The 50-epoch pilot reaches daily headline parity. Its daily median-NSE
+difference from the original specialist is +0.001591; the median of individual
+basin differences is -0.000631, with 48.0% of basins improved. A paired basin
+bootstrap gives a 95% interval [-0.007574, +0.012250] for the headline
+difference. This interval excludes neither a small deficit nor a small gain;
+it does not model seed uncertainty or spatial dependence. **Parity is not
+certified.** The original future-period test has already been inspected.
+Do not select further hyperparameters on it or call it newly untouched.
+
+The 100-epoch paired result trails its same-GPU, same-budget daily+daily
+control by 0.010228. The two paired durations also used different GPUs, so
+their difference alone cannot establish overtraining. Confirm with replicated
+contrasts and checkpoint selection using validation years inside the training
+era. Do not infer uniform basin improvement from a difference of medians.
+
+Full scenarios and paired basin differences:
+`logs/recovery_setup/paired_parity_diagnostics/{regime_scores.csv,paired_basins.csv,audit.json}`.
+The completed paired batch is a positive feasibility result for recurrent DI;
+it does not resolve original-PFN forward performance or certify a unified
+foundation model across tasks and regions.
+
+### Unseen basins AND future years
+
+All ten PUB folds completed, with training/test basin disjointness checked.
+These runs train through 1995 and score 1995–2010, unlike the spatial-only
+benchmark above, which trains through 1999. They use the original forward
+and mixed recurrent models, **not the new paired models**.
+
+| information | forward specialist | mixed recurrent model |
+|---|---:|---:|
+| none | 0.572102 | 0.590445 |
+| daily Q | — | 0.719283 |
+| weekly Q | — | 0.647390 |
+| 7-day reporting delay | — | 0.621103 |
+| 16-day reporting delay | — | 0.609814 |
+| historical 30-day campaign | — | 0.590706 |
+| historical 90-day campaign | — | 0.590645 |
+| historical 365-day campaign | — | 0.590518 |
+
+No unseen-basin daily specialist was trained in this batch, so its specialist
+gap is unmeasured. Historical campaigns show negligible lasting benefit
+relative to the **same mixed checkpoint** with no observations. Scoring only
+1995–1999 still gives 0.583101 forward and 0.599376 mixed/no-Q; the long score
+period alone does not explain the weak result. The training dates still
+differ from the standard spatial benchmark.
+Artifacts: `logs/recovery_setup/stage2_diagnostics/`.
+
+### Basin versus outlet terrain information probe
+
+All 531 paired footprints passed the 98% coverage requirement; none excluded.
+This is a **training-era hydrologic-signature probe, not daily discharge NSE**.
+Seven regional outer folds test attributes alone against an additive ridge
+correction using 15 DEM descriptors, with inner regional cross-fitting for
+the baseline residuals and a prespecified ridge alpha of 100.
+
+| predictor | mean training-scaled squared error (lower is better) |
+|---|---:|
+| attributes | 0.509618 |
+| attributes + outlet terrain | 0.607537 |
+| attributes + basin terrain | 0.594372 |
+
+Correcting coverage and basin footprint did not produce added skill in this
+test. This is evidence against this descriptor/residual formulation, not a
+proof that DEM has no hydraulic information or that every DEM encoder is
+overfitted. It does not test fine local terrain for channel geometry.
+Artifacts: `logs/recovery_setup/terrain_probe/`.
+
+### Provenance
+
+Remote snapshots under `/nfs/data/cxs1024/hydroPFN/`:
+
+| work | immutable source snapshot | archive SHA256 |
+|---|---|---|
+| objective contrasts | `experiments_20260923_v2` | `6bd713c9623a715436cf74a33e91eed8d6eb59b2cd0cf179d9c510c98f8221f5` |
+| recurrent DI / terrain probe | `experiments_20260923_v5` | `4ff5fb703106d564d14f641daab02815e6c9c63a0e3feb477953d32a5ec1e97e` |
+| paired parity | `experiments_20260923_v6` | `0b9add8d3819cd1700c3737d6f2112aac6b534bc6b08f824ada48b8611c8348e` |
+
+The paired supervisor completed at 2026-09-23 14:21:52 UTC. At the subsequent
+status check, all batches from this program were finished and GPUs 2/4 idle.
+Terrain extraction has separate input hashes and recovery provenance in
+`logs/recovery_setup/terrain_probe/summary.json` and the remote
+`logs/basin_terrain_20260923/recovery_launch.json`.
+
+Implementation/run history: [recovery log](recovery_experiments_20260923.md).
+Interpretation and next design:
+[specialist parity](specialist_parity_formulation_20260923.md) and
+[measurement assimilation / DEM](measurement_assimilation_dem_20260923.md).
+
+## Frozen-PFN decoder and duration pilots (2026-09-23)
+
+All ten 100-epoch suntzu jobs and three 300-epoch ICDS jobs completed. These
+are temporal K=0 hindcasts over the same 531 basins and 5,479 scored days,
+with raw-discharge per-basin NSE. They use a frozen source PFN and common
+512-day windows with 256 days of warmup; these are not the canonical
+365+365-day LSTM protocol. Daily readouts receive raw forcings/attributes as
+well as frozen PFN features in the hybrid condition. The original patch-head
+control receives only the frozen features, as the original architecture did.
+Implementation and input/history caveats: [decoder comparison](decoder_comparison_20260923.md).
+
+### 100-epoch matrix on suntzu
+
+| readout | seed 0 median NSE | seed 1 median NSE |
+|---|---:|---:|
+| raw LSTM | 0.679044 | 0.651564 |
+| raw TCN | 0.698380 | 0.671866 |
+| PFN + LSTM | 0.663437 | 0.648272 |
+| PFN + TCN | 0.678128 | 0.671927 |
+| PFN + daily pointwise MLP | 0.622734 | 0.620248 |
+
+Each seed's entire matrix used one GPU: seed 0 RTX 3090 Ti, seed 1 RTX 2080
+Ti. Thus cross-seed variability also includes device differences. TCN improves
+on LSTM for both raw and hybrid inputs in both seeds. The temporal readouts
+also improve on the daily pointwise hybrid control, but adding frozen PFN
+features does not consistently improve on the corresponding raw readout:
+seed-0 hybrid TCN is 0.020252 below raw TCN, while seed 1 is essentially tied.
+Paired basin differences and bootstrap intervals are in the artifact below;
+these are not spatially independent or replicated-seed confidence intervals.
+
+The unchanged source PFN's original head scores **0.651827** on the common
+cache/evaluation inputs, before refitting. This differs from the historical
+0.640079 because inputs/query-valid handling and evaluation tiling differ;
+do not attribute the whole difference to history or to decoder architecture.
+
+Artifacts: `logs/recovery_setup/decoder_comparison_diagnostics/` and
+`logs/recovery_setup/decoder_cache_manifest.json`. Remote immutable snapshot:
+`/nfs/data/cxs1024/hydroPFN/experiments_20260923_v7`; its supervisor completed
+2026-09-23 18:50:54 UTC.
+
+### 100 / 200 / 300 checkpoints within uninterrupted ICDS runs
+
+| readout (seed 0) | 100 epochs | 200 epochs | 300 epochs | 300 minus 100 |
+|---|---:|---:|---:|---:|
+| PFN + LSTM | 0.654442 | 0.648534 | 0.645362 | -0.009080 |
+| PFN + TCN | 0.677255 | 0.671351 | 0.672403 | -0.004852 |
+| original PFN patch head, refitted | 0.577272 | 0.555639 | 0.534908 | -0.042364 |
+
+All three use the same cached encoder features, random readout initialization,
+seed-0 basin/window sample stream, Adadelta lr 1, batch 128 and loss. The
+encoder stays frozen: the last row is **not** the original end-to-end model
+retrained for 300 epochs. It has no added raw daily branch and no head dropout,
+matching the original patch readout. Every checkpoint is prespecified; test
+scores were computed after training, without affecting stopping or updates.
+
+The training loss (last ten epochs' mean at each milestone) continues falling:
+
+| readout | epochs 91-100 | epochs 191-200 | epochs 291-300 |
+|---|---:|---:|---:|
+| PFN + LSTM | 0.063091 | 0.042890 | 0.037043 |
+| PFN + TCN | 0.115273 | 0.086160 | 0.076780 |
+| refitted patch head | 0.169882 | 0.148089 | 0.142865 |
+
+Thus this pilot does not support extending the same frozen-readout training
+as a remedy for the temporal gap. Falling training loss with worse test scores
+is consistent with overfitting. This is a single-seed duration experiment,
+not proof that every longer-training schedule or end-to-end adaptation fails.
+For TCN, the 300-versus-100 median paired basin delta is only -0.000312 and
+49.7% of basins improve; the headline median drop does not mean uniform harm.
+LSTM's paired median delta is -0.010752 (37.1% improved), and the refitted
+patch head's is -0.034918 (19.4% improved).
+
+ICDS Slurm array 55769402 tasks 0/1/2 all report COMPLETED with exit 0:0.
+Elapsed times: LSTM 1:21:07, TCN 1:30:10, patch head 0:13:18. Each completed
+116,400 optimizer updates. All ran on Tesla V100S GPUs with PyTorch 2.7.1
+and CUDA 11.8; duration comparisons are within one job, not across machines.
+The earlier suntzu scores are separate runs, not the 100-epoch checkpoints
+of these ICDS trajectories.
+
+Remote root:
+`/storage/group/cxs1024/default/cxs1024/hydroPFN/decoder_long_20260923`.
+Archive/source/cache hashes and job mapping are in
+`logs/recovery_setup/decoder_long_submission.json`. Result records, training
+curves, per-basin checkpoint NSE and Slurm logs are archived in
+`logs/recovery_setup/decoder_long_results/`.
+All nine checkpoint NSE arrays and medians were independently recomputed
+from saved predictions using the protocol metric; targets and gauge order
+matched the shared cache exactly, and every prediction was finite. Audit:
+`logs/recovery_setup/decoder_long_results/results_audit.json`.
+
+## Window-sampling ablation completed (checked 2026-09-27)
+
+All 20 runs in ICDS array 55837226 and analysis job 55837227 completed with
+exit 0:0. Fixed and daily sampling were paired within one GPU allocation per
+model/seed, with identical initial decoder weights, basin/random draw streams,
+100 epochs (38,800 updates), objective, dropout and history. Both treatments
+used online frozen encoding, removing the historical-cache backend difference.
+Only the start distribution changed: 79 fixed starts versus uniform sampling
+from 4,967 valid daily starts. The daily runs visited 4,966 starts at seed 0
+and all 4,967 at seed 1. Evaluation was identical across all runs.
+
+| model | seed 0 fixed | seed 0 daily | seed 1 fixed | seed 1 daily |
+|---|---:|---:|---:|---:|
+| raw LSTM | 0.692159 | 0.678157 | 0.686893 | 0.690912 |
+| raw TCN | 0.678270 | 0.691136 | 0.670252 | 0.689742 |
+| PFN + LSTM | 0.669655 | 0.718254 | 0.681419 | 0.724341 |
+| PFN + TCN | 0.670832 | 0.717008 | 0.672411 | 0.715528 |
+| original patch head, refitted | 0.576393 | 0.677449 | 0.577164 | 0.678636 |
+
+Daily starts improve hybrid LSTM headline NSE by +0.048599 / +0.042922
+(seeds 0/1) and hybrid TCN by +0.046176 / +0.043116. Individual basin NSE
+improves for 77.6% / 76.6% of hybrid LSTM basins and 79.5% / 80.4% of hybrid
+TCN basins. The refitted original head improves by +0.101056 / +0.101472,
+with approximately 93% of basins improved in each seed. These head-only runs
+remain distinct from end-to-end PFN retraining.
+
+The daily hybrid beats its corresponding daily raw control in both seeds:
+LSTM by +0.040097 / +0.033429, TCN by +0.025873 / +0.025786. Accounting for
+the raw control's sampling change, the raw-minus-hybrid gap shrinks by
+0.062601 / 0.038903 for LSTM and 0.033310 / 0.023626 for TCN. This is stronger
+evidence than a hybrid improvement alone. Raw LSTM's sampling effect is
+inconsistent (-0.014002 / +0.004019); raw TCN improves (+0.012866 / +0.019490).
+
+The fixed-window restriction was a substantial contributor to this frozen-
+readout pilot's deficit. The prior conclusion of no consistent frozen-PFN
+benefit is superseded for this corrected sampling setup. The experiment does
+not isolate context diversity, patch alignment and target-day weighting from
+each other. Two seeds and a previously inspected temporal benchmark do not
+establish universal architecture superiority or parity with external models.
+Hybrids retain bidirectional forcing context while raw controls are causal;
+the hybrid gain cannot be assigned exclusively to representation quality at
+identical information. No new spatial or daily-DI result is implied.
+
+Analysis recomputed every NSE from predictions, verified matching targets,
+gauge order, cache provenance, paired initialization/RNG streams, GPU job,
+equal budgets and unchanged encoder weights. Local artifacts:
+`logs/recovery_setup/window_sampling_diagnostics/` (scores, sampling effects,
+gap changes, per-basin scores and audit). Source hashes, job mapping and
+deployment details: [sampling experiment](window_sampling_ablation_20260926.md).
+
+## Exploratory equal-weight ensembles (2026-09-27)
+
+From the completed daily-sampling 100-epoch runs, average predictions (not
+NSE values) with fixed equal weights. All three groupings are reported;
+there is no test-fitted weighting or member selection within a grouping.
+
+| members | median NSE |
+|---|---:|
+| LSTM seeds 0 and 1 | 0.752649 |
+| TCN seeds 0 and 1 | 0.726496 |
+| both architectures, both seeds (four members) | 0.756280 |
+
+These are ensembles, not new single-model scores. They exceed the earlier
+user-supplied single-model dHBV1.1p summary numerically, but do not beat the
+approximately 0.79 Daymet cross-model ensemble described in Section 3.1 of
+[Li et al. (2025)](https://hess.copernicus.org/articles/29/6829/2025/), linked
+from [MHPI benchmarks](https://mhpi.github.io/benchmarks/). That study's broader
+multi-forcing headline is approximately 0.83. Its 531-basin ensemble section
+and the website's 671-basin 15-year table are different comparisons.
+The supplied single-model summary has not been re-audited from its predictions.
+
+The user authorized six fresh random-window hybrid runs, LSTM/TCN at seeds
+0/1/2 for 300 epochs, with all 100/200/300 checkpoints reported separately.
+See [benchmark attempt](benchmark_attempt_20260927.md). This remains an
+exploratory hindcast benchmark attempt, not a claimed new record.

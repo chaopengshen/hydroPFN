@@ -1,5 +1,12 @@
 # hydroPFN / StefaNP — handover
 
+> **2026-09-27 update:** the assessment below is historical. The corrected
+> random-window experiment materially improves temporal PFN decoder results
+> and reverses the hybrid deficit relative to matched raw controls. Read
+> [the current protocol](camels531_protocol.md#window-sampling-ablation-completed-checked-2026-09-27)
+> and [the sampling audit](window_sampling_ablation_20260926.md) first.
+> The README now reflects this result; its old claims are archived separately.
+
 What this project is, where the code is, what each arm does, how the arms
 connect, what we are trying to beat, and where we are stuck. Written
 2026-09-22, at the end of a long session on the time-series arm.

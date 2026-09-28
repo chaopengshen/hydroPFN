@@ -1,0 +1,10 @@
+{
+  "n_basins": 531,
+  "n_days": 5479,
+  "target_gauge_cache_alignment": "verified",
+  "initialization_and_basin_stream_pairs": "verified",
+  "same_slurm_job_per_fixed_daily_pair": true,
+  "online_encoder_unchanged": true,
+  "interpretation": "Positive gap_reduction means daily sampling narrows the hybrid deficit.",
+  "limits": "Two seeds; fixed test diagnostics, no test-based checkpoint selection; frozen encoder only."
+}

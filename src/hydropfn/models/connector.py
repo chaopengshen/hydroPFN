@@ -177,7 +177,8 @@ class PUBModel(nn.Module):
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(),
                                   nn.Linear(d, encoder.patch))
 
-    def forward(self, batch: dict, return_attrs: bool = False):
+    def forward(self, batch: dict, return_attrs: bool = False,
+                return_hidden: bool = False):
         """batch fields are (B, S, ...) with site 0 the query.
 
         Returns the query's reconstruction (B, N, V, patch).
@@ -243,6 +244,10 @@ class PUBModel(nn.Module):
                                 attn_mask=abias)
             z = z + ta.reshape(B, N, V, d).reshape(B, N * V, d)
 
+        if return_hidden:
+            if return_attrs:
+                raise ValueError("request hidden features or attribute reconstruction, not both")
+            return z.reshape(B, N, V, d)
         rec = self.head(z).reshape(B, N, V, self.encoder.patch)
         if return_attrs:
             # query site's reconstructed attributes, (B, n_attr)

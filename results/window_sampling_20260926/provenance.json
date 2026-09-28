@@ -1,0 +1,90 @@
+{
+  "submitted_at_utc": "2026-09-27T03:15:31.665782+00:00",
+  "root": "/storage/group/cxs1024/default/cxs1024/hydroPFN/window_sampling_20260926",
+  "preflight": "55837225",
+  "training_array": "55837226",
+  "report": "55837227",
+  "account": "cxs1024_mri",
+  "partition": "mgc-mri",
+  "constraint": "v100s",
+  "epochs": 100,
+  "seeds": [
+    0,
+    1
+  ],
+  "updates_per_epoch": 388,
+  "n_training_runs": 20,
+  "n_gpu_pairs": 10,
+  "source_archive_sha256": "b6640d75b31d4d6f5c983b1bde6ff142a8cbb33cf68866a04f44e4a637710277",
+  "source_manifest_sha256": "d5cbd27311fe82b6ef761fd0254f085da27fec57726281326aafa25729cc27c5",
+  "cache_manifest_sha256": "03ae30cb55854c39a99fd898353672e20686792705a2b5313ecfbd78aaca0704",
+  "feature_mode": "online_in_both_treatments",
+  "sampling": [
+    "fixed",
+    "daily"
+  ],
+  "array_mapping": {
+    "0": {
+      "seed": 0,
+      "decoder": "lstm",
+      "inputs": "raw"
+    },
+    "1": {
+      "seed": 0,
+      "decoder": "tcn",
+      "inputs": "raw"
+    },
+    "2": {
+      "seed": 0,
+      "decoder": "lstm",
+      "inputs": "hybrid"
+    },
+    "3": {
+      "seed": 0,
+      "decoder": "tcn",
+      "inputs": "hybrid"
+    },
+    "4": {
+      "seed": 0,
+      "decoder": "patch",
+      "inputs": "latent"
+    },
+    "5": {
+      "seed": 1,
+      "decoder": "lstm",
+      "inputs": "raw"
+    },
+    "6": {
+      "seed": 1,
+      "decoder": "tcn",
+      "inputs": "raw"
+    },
+    "7": {
+      "seed": 1,
+      "decoder": "lstm",
+      "inputs": "hybrid"
+    },
+    "8": {
+      "seed": 1,
+      "decoder": "tcn",
+      "inputs": "hybrid"
+    },
+    "9": {
+      "seed": 1,
+      "decoder": "patch",
+      "inputs": "latent"
+    }
+  },
+  "superseded": {
+    "preflight": "55837214",
+    "training_array": "55837216",
+    "report": "55837217",
+    "source_archive_sha256": "2b6fa6816fc1383b17a18fc4b8c28afb0031ea3af1242fb237611d1c9aa20537",
+    "source_manifest_sha256": "7410007b67e1640758c62d240d04d9833fff0bdcd4b4d4524595864cced33ca9",
+    "reason": "Cross-device historical-cache tolerance in preflight; no training ran. Dependent jobs cancelled automatically."
+  },
+  "updated_at_utc": "2026-09-27T03:18:13.982028+00:00",
+  "source_directory": "source_v2",
+  "preflight_status": "COMPLETED",
+  "same_device_crop_max_feature_error": 0.0
+}

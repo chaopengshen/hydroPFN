@@ -51,6 +51,8 @@ from hydropfn.models.connector import PUBModel                 # noqa: E402
 from hydropfn.models.site_encoder import SiteEncoder           # noqa: E402
 from hydropfn.paths import LOGS                                # noqa: E402
 from hydropfn.train.train_pub import build_task, collate       # noqa: E402
+from hydropfn.train.objectives import (                       # noqa: E402
+    basin_normalized_mse, training_variances)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -263,6 +265,11 @@ def main(a):
         Xs = np.nan_to_num((X - mu) / sd).astype(np.float32)
         am, asd = np.nanmean(A_[tr_idx], 0), np.nanstd(A_[tr_idx], 0) + 1e-6
         A_s = np.nan_to_num((A_ - am) / asd).astype(np.float32)
+        q_variance = None
+        if a.loss == "nse":
+            q_variance = torch.tensor(training_variances(
+                q_raw, tr_idx, tw, float(sd[obs]), a.nse_min_std),
+                device=DEVICE)
 
         Xp = np.ascontiguousarray(
             Xs[:, :(Xs.shape[1] // a.patch) * a.patch]
@@ -311,7 +318,8 @@ def main(a):
                                  else 0),
                           dem_bottleneck=a.dem_mlp_bottleneck)
         net = PUBModel(enc, depth=a.conn_depth, time_aligned=a.time_aligned,
-                       geo=a.geo, causal=a.causal).to(DEVICE)
+                       geo=a.geo, causal=a.causal,
+                       no_pooled=a.no_pooled).to(DEVICE)
         if a.init_ckpt:
             net.load_state_dict(torch.load(a.init_ckpt,
                                            map_location=DEVICE))
@@ -350,9 +358,10 @@ def main(a):
                 step_self = (int(rng.integers(1, hi))
                              if rng.random() < a.self_ctx_p else 0)
                 K = int(rng.choice(k_train))
-                tasks = []
+                tasks, queries = [], []
                 for _ in range(a.tasks):
                     q = int(rng.choice(tr_idx))
+                    queries.append(q)
                     t, _, _ = build_task(
                         Xp, A_s, valid_p, doy, q, tr_idx[tr_idx != q], K, rng,
                         a.win, obs, a.retrieval, nn_rank,
@@ -378,8 +387,17 @@ def main(a):
                 b = collate(tasks)
                 rec = net(b)
                 w = (1 - b["vis"][:, 0]) * b["valid"][:, 0]
-                loss = (((rec - b["series"][:, 0]) ** 2)
-                        * w.unsqueeze(-1)).sum() / w.sum().clamp(min=1.0)
+                if a.loss == "nse":
+                    target = b["series"][:, 0, :, obs, :]
+                    valid_q = w[:, :, obs, None].expand_as(target)
+                    # Preserve the legacy patch-sized loss multiplier so the
+                    # objective ablation does not also rescale it by 1/patch.
+                    loss = a.patch * basin_normalized_mse(
+                        rec[:, :, obs, :], target, valid_q,
+                        q_variance[queries])
+                else:
+                    loss = (((rec - b["series"][:, 0]) ** 2)
+                            * w.unsqueeze(-1)).sum() / w.sum().clamp(min=1.0)
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -387,7 +405,7 @@ def main(a):
                 sched.step()
                 tot += loss.item()
             if (ep + 1) % 10 == 0 or ep == 0:
-                print(f"      epoch {ep + 1}/{a.epochs}  masked MSE "
+                print(f"      epoch {ep + 1}/{a.epochs}  {a.loss} loss "
                       f"{tot / a.steps:.4f}  [{(time.time() - t0) / 60:.1f} "
                       f"min]", flush=True)
 
@@ -395,6 +413,11 @@ def main(a):
             ck = LOGS / "camels531" / tag
             ck.mkdir(parents=True, exist_ok=True)
             torch.save(net.state_dict(), ck / f"fold{kf}.pt")
+            np.savez(ck / f"fold{kf}_normalization.npz", mean=mu, std=sd,
+                     attr_mean=am, attr_std=asd, train_indices=tr_idx,
+                     train_gage=gage["gage"].to_numpy()[tr_idx].astype(str),
+                     q_variance=(q_variance.cpu().numpy() if q_variance is not None
+                                 else np.array([])))
 
         # ---- evaluation: tile the eval span, keep only the scored days
         ev = win_p["eval_in"]
@@ -466,7 +489,10 @@ def main(a):
                    "epochs": a.epochs, "steps": a.steps, "tasks": a.tasks,
                    "k_train": a.k_train, "context_pool": a.context_pool,
                    "time_aligned": a.time_aligned, "geo": a.geo,
-                   "causal": a.causal, "median_nse": summary}, f, indent=2)
+                   "causal": a.causal, "median_nse": summary,
+                   "loss": a.loss, "nse_min_std_mm_day": a.nse_min_std,
+                   "no_pooled": a.no_pooled, "patch": a.patch, "win": a.win,
+                   "args": vars(a)}, f, indent=2)
     print(f"\nwrote {outdir}", flush=True)
     print("  nn = nearest donor, cm = context mean, idw = inverse-distance "
           "weighting -- the baselines K>0 must beat.", flush=True)
@@ -490,6 +516,11 @@ if __name__ == "__main__":
     ap.add_argument("--geo", action="store_true", default=True)
     ap.add_argument("--no-geo", dest="geo", action="store_false")
     ap.add_argument("--causal", action="store_true")
+    ap.add_argument("--no-pooled", action="store_true",
+                    help="disable pooled summaries without changing causality")
+    ap.add_argument("--loss", choices=["mse", "nse"], default="mse")
+    ap.add_argument("--nse-min-std", type=float, default=0.1,
+                    help="training Q std floor in raw mm/day for NSE loss")
     ap.add_argument("--area-scale", action="store_true")
     ap.add_argument("--retrieval", choices=["geo", "similar", "random"],
                     default="geo")
