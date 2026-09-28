@@ -800,3 +800,15 @@ Current 100-epoch single-model medians are LSTM 0.718254/0.724341 and
 TCN 0.717008/0.715528. These remain below the recorded dHBV1.1p reference
 of 0.7431. See [benchmark attempt](benchmark_attempt_20260927.md) for
 comparison scope, launch provenance and limitations.
+
+### 300-epoch follow-up completed (2026-09-28)
+
+All six single-model runs completed. At epoch 300, LSTM seeds 0/1/2
+score 0.700680/0.704532/0.693499, and TCN 0.711041/0.706535/0.711012.
+None matches the recorded 0.7431 reference. LSTM training loss roughly
+halved between epochs 100 and 300 while test NSE declined in every seed,
+consistent with overfitting despite unrestricted window sampling. TCN
+training loss also fell, without a consistent test improvement.
+The full 100/200/300 table and TCN repeat-variability caveat are in
+[the benchmark record](benchmark_attempt_20260927.md); machine-readable
+records are in `results/benchmark_daily_20260927/`. No ensembles are used.

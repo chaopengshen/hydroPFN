@@ -1,0 +1,30 @@
+{
+  "scores": [
+    {
+      "epoch": 100,
+      "optimizer_updates": 38800,
+      "median_nse": 0.7128685588600037
+    },
+    {
+      "epoch": 200,
+      "optimizer_updates": 77600,
+      "median_nse": 0.7123142409296174,
+      "reference_epoch": 100,
+      "n_paired_basins": 531,
+      "median_difference": -0.0005543179303862944,
+      "median_paired_delta": -0.003343383167147662,
+      "fraction_better": 0.4406779661016949
+    },
+    {
+      "epoch": 300,
+      "optimizer_updates": 116400,
+      "median_nse": 0.7110121133525937,
+      "reference_epoch": 100,
+      "n_paired_basins": 531,
+      "median_difference": -0.0018564455074099317,
+      "median_paired_delta": -0.00026877658761670364,
+      "fraction_better": 0.4971751412429379
+    }
+  ],
+  "note": "Prespecified test diagnostics; no checkpoint selection or early stopping."
+}
