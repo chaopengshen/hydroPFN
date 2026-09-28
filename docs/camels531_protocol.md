@@ -788,28 +788,15 @@ equal budgets and unchanged encoder weights. Local artifacts:
 gap changes, per-basin scores and audit). Source hashes, job mapping and
 deployment details: [sampling experiment](window_sampling_ablation_20260926.md).
 
-## Exploratory equal-weight ensembles (2026-09-27)
+## Single-model benchmark follow-up (2026-09-27)
 
-From the completed daily-sampling 100-epoch runs, average predictions (not
-NSE values) with fixed equal weights. All three groupings are reported;
-there is no test-fitted weighting or member selection within a grouping.
+The user requested single-model comparisons only. Six fresh corrected-daily
+sampling runs (LSTM and TCN hybrids, seeds 0/1/2) train for 300 epochs and
+report each model independently at 100/200/300 epochs. No predictions are
+combined across seeds or architectures. The earlier exploratory ensemble
+calculation is excluded from this comparison.
 
-| members | median NSE |
-|---|---:|
-| LSTM seeds 0 and 1 | 0.752649 |
-| TCN seeds 0 and 1 | 0.726496 |
-| both architectures, both seeds (four members) | 0.756280 |
-
-These are ensembles, not new single-model scores. They exceed the earlier
-user-supplied single-model dHBV1.1p summary numerically, but do not beat the
-approximately 0.79 Daymet cross-model ensemble described in Section 3.1 of
-[Li et al. (2025)](https://hess.copernicus.org/articles/29/6829/2025/), linked
-from [MHPI benchmarks](https://mhpi.github.io/benchmarks/). That study's broader
-multi-forcing headline is approximately 0.83. Its 531-basin ensemble section
-and the website's 671-basin 15-year table are different comparisons.
-The supplied single-model summary has not been re-audited from its predictions.
-
-The user authorized six fresh random-window hybrid runs, LSTM/TCN at seeds
-0/1/2 for 300 epochs, with all 100/200/300 checkpoints reported separately.
-See [benchmark attempt](benchmark_attempt_20260927.md). This remains an
-exploratory hindcast benchmark attempt, not a claimed new record.
+Current 100-epoch single-model medians are LSTM 0.718254/0.724341 and
+TCN 0.717008/0.715528. These remain below the recorded dHBV1.1p reference
+of 0.7431. See [benchmark attempt](benchmark_attempt_20260927.md) for
+comparison scope, launch provenance and limitations.

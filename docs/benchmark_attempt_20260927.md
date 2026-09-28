@@ -31,9 +31,9 @@ six new runs. Record fixed 100/200/300 checkpoints and evaluate only after
 training. The earlier long runs used the defective fixed-window grid and
 cannot settle whether longer training helps under corrected sampling.
 
-At each checkpoint report all six individual scores, three-seed equal-weight
-LSTM and TCN ensembles, and their six-member equal-weight ensemble. Do not
-choose the best epoch, subset of members or weights using test scores.
+At each checkpoint report all six individual scores, with seeds kept separate.
+The user explicitly requested single-model comparisons only. Do not combine
+predictions across seeds or architectures, or choose the best epoch on test.
 The already-inspected test makes this an exploratory benchmark attempt;
 it is not a new untouched validation claim. Encoder pretraining used the
 full training era, so a clean inner temporal validation experiment would
@@ -52,12 +52,20 @@ gap changes, provenance and audit. The authoritative interpretation remains
 in `docs/camels531_protocol.md`. Code and test instructions accompany it;
 raw CAMELS data, checkpoints and unpublished manuscripts are not uploaded.
 
-The ensemble scorer is `experiments/benchmark_decoder_ensembles.py`. It also
-supports rescoring the existing two-seed 100-epoch runs via
-`--seeds 0,1 --epochs 100 --tag-template window_{model}_hybrid_daily_s{seed}`.
-Prediction arrays must be aligned and finite; scores average predictions,
-not individual NSE values. All member combinations above are reported.
+Each training job writes `checkpoint_scores.json` and per-basin checkpoint
+NSE arrays after training. No separate ensemble scoring job is needed.
 
-Compute uses ICDS `mgc-mri` / `cxs1024_mri`, V100S, at most four concurrent
-GPU jobs, with a dependent CPU report on `basic` / `open`. No paid standard
-queue is used. Launch records and immutable source hashes accompany the run.
+## Launch record
+
+- Training array: **55859797**, six runs, maximum four concurrent GPU jobs.
+- Queue/account: ICDS `mgc-mri` / `cxs1024_mri`, V100S, eight-hour limit.
+- Source commit: `7e8c8c5` (training code unchanged by the subsequent scope update).
+- Immutable source: `/storage/group/cxs1024/default/cxs1024/hydroPFN/benchmark_daily_20260927/source`.
+- Archive SHA256: `5309d687183f91a3801f9ec42915103c10f19b4a6daf834642aec8384f6f5ea7`.
+- Source manifest SHA256: `75871d9821b1733e4deac1b92fddd2fa4a3f75120ded844275eaeec7e7221b03`.
+- Dependent ensemble report **55859798 was cancelled** on the user's scope update.
+  The snapshot retains the unused historical scorer; no ensemble report will run.
+- Single-model checkpoint evaluation is already part of every training job.
+
+The previous two-seed 100-epoch single-model results are LSTM
+0.718254/0.724341 and TCN 0.717008/0.715528. No benchmark victory is claimed.
