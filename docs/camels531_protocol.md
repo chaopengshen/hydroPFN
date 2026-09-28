@@ -812,3 +812,14 @@ training loss also fell, without a consistent test improvement.
 The full 100/200/300 table and TCN repeat-variability caveat are in
 [the benchmark record](benchmark_attempt_20260927.md); machine-readable
 records are in `results/benchmark_daily_20260927/`. No ensembles are used.
+
+### Matched raw recipe and frozen residual follow-up (2026-09-28)
+
+The next experiment restores the local RegionalLSTM recipe (365+365 days,
+output dropout 0.5, continuous test state, original iteration rule), then
+freezes its epoch-100 model. Separate 50-epoch raw-only and PFN-informed
+correction heads start at exact baseline parity. Three seeds are queued as
+ICDS array 55872463 after successful GPU preflight 55872461. No encoder joint
+training, ensembles or test-based checkpoint selection are used. This matches
+the local LSTM recipe, not an independently reproduced external HBV model.
+See [full design and audit](specialist_residual_20260928.md).
