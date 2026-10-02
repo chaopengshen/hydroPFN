@@ -823,3 +823,13 @@ ICDS array 55872463 after successful GPU preflight 55872461. No encoder joint
 training, ensembles or test-based checkpoint selection are used. This matches
 the local LSTM recipe, not an independently reproduced external HBV model.
 See [full design and audit](specialist_residual_20260928.md).
+
+### Frozen correction results checked 2026-10-02
+
+Array 55872463 completed all three seeds. Raw LSTM e50 NSE was
+0.708602/0.708294/0.714377; the prespecified e100 correction source scored
+0.690394/0.699520/0.700812. PFN correction after 50 epochs scored
+0.690701/0.691691/0.689384, failing to consistently improve that baseline.
+Exact initial parity and frozen-weight checks passed in every seed.
+See [complete experiment results](specialist_residual_20260928.md#completed-results-checked-2026-10-02).
+The experiment has not reached the external specialist reference.

@@ -1,0 +1,8 @@
+{"model": "raw", "epoch": 50, "median_nse": 0.7086015336010367}
+{"model": "raw", "epoch": 100, "median_nse": 0.6903941367184305}
+{"model": "raw_correction", "epoch": 10, "median_nse": 0.687829127427374}
+{"model": "raw_correction", "epoch": 25, "median_nse": 0.6881496056617596}
+{"model": "raw_correction", "epoch": 50, "median_nse": 0.6869219921164642}
+{"model": "pfn_correction", "epoch": 10, "median_nse": 0.6910064544213117}
+{"model": "pfn_correction", "epoch": 25, "median_nse": 0.6883924214677937}
+{"model": "pfn_correction", "epoch": 50, "median_nse": 0.6907012516742815}

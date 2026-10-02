@@ -1,0 +1,21 @@
+{
+  "cache": "../cache",
+  "source": "../encoder",
+  "out": "../runs/seed2",
+  "seed": 2,
+  "raw_epochs": 100,
+  "correction_epochs": 50,
+  "steps": 0,
+  "batch": 128,
+  "allow_cpu": false,
+  "steps_resolved": 266,
+  "warmup": 365,
+  "rho": 365,
+  "dropout": 0.5,
+  "optimizer": "Adadelta lr=1 clip=1",
+  "encoder_sha256": "e1ce5db5a6a8c5873fa36f28e7f32e6a4cd29bd496bfe011c4a107929c2891fb",
+  "cache_manifest_sha256": "03ae30cb55854c39a99fd898353672e20686792705a2b5313ecfbd78aaca0704",
+  "evaluation": "continuous raw LSTM; 512-day PFN windows with 365 scored days",
+  "selection": "fixed epochs; no validation or test selection",
+  "device": "cuda"
+}

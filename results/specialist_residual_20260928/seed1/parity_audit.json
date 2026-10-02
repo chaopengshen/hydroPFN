@@ -1,0 +1,10 @@
+{
+  "raw_correction": {
+    "initial_max_abs_difference": 0.0,
+    "parameters": 1089
+  },
+  "pfn_correction": {
+    "initial_max_abs_difference": 0.0,
+    "parameters": 9793
+  }
+}
